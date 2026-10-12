@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -31,8 +31,14 @@ from .exceptions import WeatherError
 log = logging.getLogger(__name__)
 
 HOURLY_VARIABLES = ("wind_speed_10m", "wind_gusts_10m", "rain", "showers", "snowfall", "temperature_2m")
-BATCH_SIZE = 100
-MAX_PARALLEL = 4
+# Open-Meteo counts each location as one call (600/min, 10k/day on the free tier).
+BATCH_SIZE = 50
+MAX_PARALLEL = 6
+# The free API's latency is usually ~0.3 s but has a long tail (5-30 s). A batch that
+# hasn't answered by then is sent again and the first answer wins.
+HEDGE_AFTER_S = 2.5
+REQUEST_TIMEOUT_S = 15.0
+_attempts = ThreadPoolExecutor(max_workers=2 * MAX_PARALLEL, thread_name_prefix="open-meteo")
 CACHE_TTL_S = 30 * 60
 FORECAST_DAYS = 16
 HOUR = timedelta(hours=1)
@@ -121,12 +127,31 @@ class OpenMeteoClient:
         if missing:
             batches = [missing[i : i + BATCH_SIZE] for i in range(0, len(missing), BATCH_SIZE)]
             with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
-                results = list(pool.map(lambda b: self._fetch([points[i] for i in b], start, end), batches))
+                results = list(pool.map(lambda b: self._hedged([points[i] for i in b], start, end), batches))
             fresh = {keys[i]: series for batch, out in zip(batches, results) for i, series in zip(batch, out)}
             cache.set_many(fresh, CACHE_TTL_S)
             cached.update(fresh)
         log.info("weather: %d points, %d fetched", len(points), len(missing))
         return [cached[k] for k in keys]
+
+    def _hedged(self, points: list[LatLon], start: datetime, end: datetime) -> list[HourlySeries]:
+        """Fetch a batch; if it's slow, race a second identical request against it."""
+        first = _attempts.submit(self._fetch, points, start, end)
+        done, _ = wait([first], timeout=HEDGE_AFTER_S)
+        if done:
+            return first.result()
+        log.info("weather: batch of %d slow after %.1f s, hedging", len(points), HEDGE_AFTER_S)
+        pending: set[Future[list[HourlySeries]]] = {first, _attempts.submit(self._fetch, points, start, end)}
+        error: WeatherError | None = None
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    return future.result()
+                except WeatherError as exc:
+                    error = exc
+        assert error is not None
+        raise error
 
     def _fetch(self, points: list[LatLon], start: datetime, end: datetime) -> list[HourlySeries]:
         form = {
@@ -143,7 +168,9 @@ class OpenMeteoClient:
         if self.api_key:
             form["apikey"] = self.api_key
         try:
-            data = request_json("POST", f"{self.base_url}/v1/forecast", service="open-meteo", data=form)
+            data = request_json(
+                "POST", f"{self.base_url}/v1/forecast", service="open-meteo", data=form, timeout=REQUEST_TIMEOUT_S
+            )
         except UpstreamError as exc:
             if exc.status == 429:
                 raise WeatherError("The weather service's rate limit was reached. Try again in a minute.") from exc

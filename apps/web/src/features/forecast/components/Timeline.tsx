@@ -107,7 +107,7 @@ export function Timeline({ plan }: { plan: Plan }) {
           {[0, 12, 24, 36, 48].map((h) => (
             <span
               key={h}
-              className="absolute -translate-x-1/2 tabular-nums first:translate-x-0 last:-translate-x-full"
+              className="absolute -translate-x-1/2 whitespace-nowrap tabular-nums first:translate-x-0 last:-translate-x-full"
               style={{ left: `${(h / FORECAST_HOURS) * 100}%` }}
             >
               {h === 0 ? "0 h" : `+${h} h`}
@@ -132,7 +132,18 @@ export function Timeline({ plan }: { plan: Plan }) {
             Loading the 48-hour corridor forecast…
           </div>
         )}
-        {corridor.isError && <div className="text-xs text-red-600">Heatmap unavailable: {corridor.error.message}</div>}
+        {corridor.isError && (
+          <div className="flex items-center gap-2 text-xs text-red-600" role="alert">
+            Heatmap unavailable: {corridor.error.message}
+            <button
+              type="button"
+              onClick={() => corridor.refetch()}
+              className="rounded border border-red-200 px-1.5 py-0.5 font-medium hover:bg-red-50"
+            >
+              Retry
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

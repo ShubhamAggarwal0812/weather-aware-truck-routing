@@ -14,9 +14,10 @@ def test_provider_alternatives_are_used_when_there_are_three():
         straight_route(ORIGIN, DEST, via=(41.5, -100)),
         straight_route(ORIGIN, DEST, via=(38.5, -100)),
     ]
-    provider = FakeProvider(routes)
-    assert len(three_routes(provider, REQUEST)) == 3
-    assert provider.via_calls == []
+    provider = FakeProvider(routes, via=lambda v: straight_route(ORIGIN, DEST, via=v))
+    assert three_routes(provider, REQUEST) == routes
+    # The first two detours go out with the main request, but no second round follows.
+    assert len(provider.via_calls) == 2
 
 
 def test_detours_fill_in_missing_alternatives():
@@ -40,7 +41,21 @@ def test_duplicate_routes_are_dropped():
     assert distinct_routes([a, b, c], 3) == [a, c]
 
 
-def test_no_routes_means_no_detours():
+def test_no_routes_means_no_second_round():
     provider = FakeProvider([])
     assert three_routes(provider, REQUEST) == []
-    assert provider.via_calls == []
+    assert len(provider.via_calls) == 2
+
+
+def test_second_round_when_first_detours_are_unusable():
+    calls = []
+
+    def via(v):
+        calls.append(v)
+        # First-round detours retrace the fastest route; later ones are genuinely different.
+        return straight_route(ORIGIN, DEST) if len(calls) <= 2 else straight_route(ORIGIN, DEST, via=v)
+
+    provider = FakeProvider([straight_route(ORIGIN, DEST)], via=via)
+    routes = three_routes(provider, REQUEST)
+    assert len(routes) == 3
+    assert len(provider.via_calls) == 6

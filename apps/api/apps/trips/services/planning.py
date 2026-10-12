@@ -24,7 +24,8 @@ from common.geo import LatLon, point_at_distance
 # Load weight is cargo; routing needs the whole truck. 35,000 lb is a typical
 # empty tractor + 53 ft dry van.
 TARE_WEIGHT_LB = 35_000
-CHECKPOINT_SNAP_DEG = 0.02  # ~2 km; finer than the 3 km weather model grid
+# ~5 km: close to the 3 km HRRR grid, and it lets overlapping routes share forecasts.
+CHECKPOINT_SNAP_DEG = 0.05
 
 
 @dataclass(frozen=True)

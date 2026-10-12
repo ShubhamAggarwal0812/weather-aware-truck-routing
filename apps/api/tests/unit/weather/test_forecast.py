@@ -1,3 +1,5 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -71,7 +73,7 @@ def test_batches_points_and_sums_rain_and_showers():
     route = respx.post(URL).mock(side_effect=handler)
     points = [(30 + i * 0.01, -90.0) for i in range(250)]
     out = OpenMeteoClient(base_url="https://api.open-meteo.com", api_key="").hourly(points, T0, T0 + timedelta(hours=3))
-    assert route.call_count == 3  # batches of 100
+    assert route.call_count == 5  # batches of 50
     assert len(out) == 250
     assert out[0].rain_in[0] == pytest.approx(0.15)
     assert out[0].rain_in[-1] == pytest.approx(0.15)  # a null showers value carries the previous one
@@ -98,3 +100,27 @@ def test_misaligned_time_window_is_rejected():
     respx.post(URL).mock(return_value=httpx.Response(200, json=_location(30, -90, T0 + timedelta(hours=1), 3)))
     with pytest.raises(WeatherError, match="time window"):
         OpenMeteoClient(base_url="https://api.open-meteo.com", api_key="").hourly([(30, -90)], T0, T0)
+
+
+@respx.mock
+def test_slow_batches_are_hedged(monkeypatch):
+    monkeypatch.setattr("apps.weather.forecast.HEDGE_AFTER_S", 0.05)
+    attempts = ThreadPoolExecutor(max_workers=2)
+    monkeypatch.setattr("apps.weather.forecast._attempts", attempts)
+    calls = []
+
+    def handler(request):
+        calls.append(time.monotonic())
+        if len(calls) == 1:
+            time.sleep(1.0)  # the first attempt hangs
+        return httpx.Response(200, json=_location(30, -90, T0, 3))
+
+    respx.post(URL).mock(side_effect=handler)
+    started = time.monotonic()
+    out = OpenMeteoClient(base_url="https://api.open-meteo.com", api_key="").hourly(
+        [(30, -90)], T0, T0 + timedelta(hours=2)
+    )
+    assert len(out) == 1
+    assert len(calls) == 2
+    assert time.monotonic() - started < 0.8  # answered by the hedge, not the slow attempt
+    attempts.shutdown(wait=True)  # let the abandoned attempt finish inside the test

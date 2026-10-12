@@ -1,9 +1,8 @@
 """Get three genuinely different routes.
 
-Providers often return fewer alternatives than asked for, especially on short
-or corridor-like trips. When that happens we push extra routes through a point
-offset to either side of the fastest route and keep the ones that are distinct
-and not absurdly slow.
+Providers often return fewer alternatives than asked for (TomTom returns none
+for most future departures). Extra routes are forced through points offset to
+either side of the trip and kept only if they are distinct and not absurdly slow.
 """
 
 from __future__ import annotations
@@ -27,9 +26,6 @@ MAX_SLOWDOWN = 1.6  # a detour may take at most 60% longer than the fastest rout
 SAME_ROUTE_OVERLAP = 0.85  # sharing more than this much distance counts as the same route
 NEAR_M = 1_000
 CELL_DEG = 0.02
-
-# (fraction along the fastest route, side) in the order we try them.
-VIA_CANDIDATES = ((0.5, 1), (0.5, -1), (0.35, 1), (0.65, -1), (0.35, -1), (0.65, 1))
 
 
 class _RouteIndex:
@@ -87,39 +83,67 @@ def _overlap_with(route: Route, others: list[Route]) -> float:
     return overlap_fraction(route, index)
 
 
-def via_points(fastest: Route, request: RouteRequest) -> list[LatLon]:
-    """Points to the left and right of the fastest route, scaled to trip length."""
-    crow = haversine_m(request.origin, request.destination)
+def detour_points(origin: LatLon, destination: LatLon, fractions: tuple[float, ...] = (0.5,)) -> list[LatLon]:
+    """Points either side of the straight line between the endpoints, scaled to trip length.
+
+    They only depend on the endpoints, so detour requests can go out together
+    with the main request instead of waiting for it.
+    """
+    crow = haversine_m(origin, destination)
     offset = min(150_000, max(20_000, 0.15 * crow))
-    out = []
-    for fraction, side in VIA_CANDIDATES:
+    bearing = bearing_deg(origin, destination)
+    out: list[LatLon] = []
+    for fraction in fractions:
+        mid = destination_point(origin, bearing, crow * fraction)
+        out.extend(destination_point(mid, bearing + 90 * side, offset) for side in (1, -1))
+    return out
+
+
+def via_points(fastest: Route, fractions: tuple[float, ...], crow_m: float) -> list[LatLon]:
+    """Points either side of the fastest route itself, for a second round of detours."""
+    offset = min(150_000, max(20_000, 0.15 * crow_m))
+    out: list[LatLon] = []
+    for fraction in fractions:
         d = fastest.distance_m * fraction
         a = point_at_distance(fastest.points, fastest.cum_distance_m, max(0.0, d - 2_000))
         b = point_at_distance(fastest.points, fastest.cum_distance_m, min(fastest.distance_m, d + 2_000))
         mid = point_at_distance(fastest.points, fastest.cum_distance_m, d)
-        out.append(destination_point(mid, bearing_deg(a, b) + 90 * side, offset))
+        out.extend(destination_point(mid, bearing_deg(a, b) + 90 * side, offset) for side in (1, -1))
     return out
 
 
-def three_routes(provider: RoutingProvider, request: RouteRequest) -> list[Route]:
-    routes = distinct_routes(provider.routes(request, alternatives=WANTED_ROUTES - 1), WANTED_ROUTES)
-    if not routes:
-        return routes
-
+def _add_detours(routes: list[Route], candidates: list[Route | None]) -> None:
     fastest = routes[0]
-    vias = via_points(fastest, request)
-    # Two rounds keep provider calls (and free-tier quota) down when the first round is enough.
-    for batch in (vias[:4], vias[4:]):
+    for candidate in candidates:
         if len(routes) >= WANTED_ROUTES:
-            break
-        with ThreadPoolExecutor(max_workers=len(batch)) as pool:
-            candidates = list(pool.map(lambda via: provider.route_via(request, via), batch))
-        for candidate in candidates:
-            if len(routes) >= WANTED_ROUTES:
-                break
-            if candidate is None or candidate.drive_s > fastest.drive_s * MAX_SLOWDOWN:
-                continue
-            if _overlap_with(candidate, routes) < SAME_ROUTE_OVERLAP:
-                candidate.notes.append("Detour alternative: the routing API returned fewer than 3 routes.")
-                routes.append(candidate)
+            return
+        if candidate is None or candidate.drive_s > fastest.drive_s * MAX_SLOWDOWN:
+            continue
+        if _overlap_with(candidate, routes) < SAME_ROUTE_OVERLAP:
+            candidate.notes.append("Detour alternative: the routing API returned fewer than 3 routes.")
+            routes.append(candidate)
+
+
+def three_routes(provider: RoutingProvider, request: RouteRequest) -> list[Route]:
+    """The provider's routes, topped up with detours to reach three distinct ones.
+
+    The main request and the first two detours run in parallel, so a provider
+    that returns no alternatives costs one round trip, not two. Only if those
+    detours are unusable does a second round go out.
+    """
+    first_round = detour_points(request.origin, request.destination)
+    with ThreadPoolExecutor(max_workers=1 + len(first_round)) as pool:
+        main = pool.submit(provider.routes, request, alternatives=WANTED_ROUTES - 1)
+        detours = [pool.submit(provider.route_via, request, via) for via in first_round]
+        routes = distinct_routes(main.result(), WANTED_ROUTES)
+        if not routes:
+            return routes
+        if len(routes) < WANTED_ROUTES:
+            _add_detours(routes, [f.result() for f in detours])
+
+    if len(routes) < WANTED_ROUTES:
+        crow = haversine_m(request.origin, request.destination)
+        second_round = via_points(routes[0], (0.35, 0.65), crow)
+        with ThreadPoolExecutor(max_workers=len(second_round)) as pool:
+            _add_detours(routes, list(pool.map(lambda via: provider.route_via(request, via), second_round)))
     return routes

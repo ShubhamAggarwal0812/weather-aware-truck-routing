@@ -16,7 +16,8 @@ from common.geo import METERS_PER_MILE, LatLon, cumulative_distances, haversine_
 
 STEPS_DEG = (0.1, 0.125, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 1.0)
 DEFAULT_BUFFER_M = 30 * METERS_PER_MILE
-DEFAULT_MAX_CELLS = 600
+# Each cell is one Open-Meteo call; the free tier allows 600 a minute per IP.
+DEFAULT_MAX_CELLS = 300
 METERS_PER_DEG_LAT = 111_195.0
 
 
