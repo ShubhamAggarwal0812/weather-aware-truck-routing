@@ -138,6 +138,8 @@ The live app is two Vercel projects from this repo, [weather-truck-routing](http
 - **`apps/api`:** Django as a Python function. Vercel detects `manage.py` and installs from `uv.lock`. Env: `TOMTOM_API_KEY`, `DJANGO_SETTINGS_MODULE=config.settings.production`.
 - **`apps/web`:** the Vite build. `vercel.json` proxies `/api/*` to the API project, so the browser talks to one origin and no CORS is needed.
 
+Both projects are connected to this repo: every push to `main` redeploys production, and other branches get preview URLs. Each project's `ignoreCommand` skips the build when nothing under its folder changed since its last deployment, so a frontend-only change doesn't rebuild the API.
+
 `infra/` holds the container setup: `docker/api.Dockerfile` (uv, gunicorn, non-root), `docker/web.Dockerfile` (static build on nginx), and `nginx/web.conf` (SPA, cache headers, `/api` proxy). `compose.yaml` runs both.
 
 ## Repository layout
