@@ -1,0 +1,21 @@
+# Full stack on http://localhost:8080 (WEB_PORT to change) — `make up`.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,api
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy

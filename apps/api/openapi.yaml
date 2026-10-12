@@ -1,0 +1,832 @@
+openapi: 3.0.3
+info:
+  title: Weather-Aware Truck Routing API
+  version: 1.0.0
+  description: Three truck routes, weather at each checkpoint's ETA, load-aware risk,
+    and a 48-hour corridor forecast.
+paths:
+  /api/v1/config:
+    get:
+      operationId: getConfig
+      tags:
+      - config
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+          description: ''
+  /api/v1/health:
+    get:
+      operationId: health_retrieve
+      description: Liveness probe. Doesn't touch upstream services.
+      tags:
+      - health
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+          description: ''
+  /api/v1/places:
+    get:
+      operationId: searchPlaces
+      parameters:
+      - in: query
+        name: q
+        schema:
+          type: string
+        description: Free text, at least 2 characters.
+        required: true
+      tags:
+      - places
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaceSearchResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/trips/corridor-forecast:
+    post:
+      operationId: getCorridorForecast
+      tags:
+      - trips
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorridorRequest'
+        required: true
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Corridor'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '502':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/trips/plan:
+    post:
+      operationId: planTrip
+      tags:
+      - trips
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanRequest'
+        required: true
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '502':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+components:
+  schemas:
+    Band:
+      type: object
+      properties:
+        level:
+          $ref: '#/components/schemas/RiskLevelEnum'
+        threshold:
+          type: number
+          format: double
+        inclusive:
+          type: boolean
+      required:
+      - inclusive
+      - level
+      - threshold
+    Checkpoint:
+      type: object
+      properties:
+        index:
+          type: integer
+        mile:
+          type: number
+          format: double
+        covers_mi:
+          type: array
+          items:
+            type: number
+            format: double
+          description: '[from, to]: the stretch this checkpoint scores.'
+          maxItems: 2
+          minItems: 2
+        lat:
+          type: number
+          format: double
+        lon:
+          type: number
+          format: double
+        eta:
+          type: string
+          format: date-time
+        drive_time_s:
+          type: integer
+        level:
+          $ref: '#/components/schemas/RiskLevelEnum'
+        conditions:
+          $ref: '#/components/schemas/Conditions'
+        factors:
+          type: array
+          items:
+            $ref: '#/components/schemas/Factor'
+        drivers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConditionEnum'
+      required:
+      - conditions
+      - covers_mi
+      - drive_time_s
+      - drivers
+      - eta
+      - factors
+      - index
+      - lat
+      - level
+      - lon
+      - mile
+    Comparison:
+      type: object
+      properties:
+        route_id:
+          type: string
+        criterion:
+          $ref: '#/components/schemas/CriterionEnum'
+        recommended_value:
+          type: number
+          format: double
+        other_value:
+          type: number
+          format: double
+      required:
+      - criterion
+      - other_value
+      - recommended_value
+      - route_id
+    ConditionEnum:
+      enum:
+      - wind
+      - rain
+      - snow
+      type: string
+      description: |-
+        * `wind` - wind
+        * `rain` - rain
+        * `snow` - snow
+    Conditions:
+      type: object
+      properties:
+        wind_mph:
+          type: number
+          format: double
+        gust_mph:
+          type: number
+          format: double
+        rain_in_hr:
+          type: number
+          format: double
+        snow_in_hr:
+          type: number
+          format: double
+        temp_f:
+          type: integer
+      required:
+      - gust_mph
+      - rain_in_hr
+      - snow_in_hr
+      - temp_f
+      - wind_mph
+    Config:
+      type: object
+      properties:
+        routing_provider:
+          type: string
+        truck_aware:
+          type: boolean
+        rules:
+          $ref: '#/components/schemas/RiskRules'
+      required:
+      - routing_provider
+      - rules
+      - truck_aware
+    Corridor:
+      type: object
+      properties:
+        step_deg:
+          type: number
+          format: double
+        rows:
+          type: array
+          items:
+            type: integer
+          description: Cell centre latitude = row * step_deg.
+        cols:
+          type: array
+          items:
+            type: integer
+          description: Cell centre longitude = col * step_deg.
+        times:
+          type: array
+          items:
+            type: string
+            format: date-time
+        wind_mph:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: double
+          description: '[hour][cell]'
+        rain_in_hr:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: double
+          description: '[hour][cell]'
+        snow_in_hr:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: double
+          description: '[hour][cell]'
+        risk:
+          type: array
+          items:
+            type: array
+            items:
+              type: integer
+          description: '[hour][cell] risk score 0-4.'
+      required:
+      - cols
+      - rain_in_hr
+      - risk
+      - rows
+      - snow_in_hr
+      - step_deg
+      - times
+      - wind_mph
+    CorridorRequest:
+      type: object
+      properties:
+        lines:
+          type: array
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: number
+                format: double
+              maxItems: 2
+              minItems: 2
+            maxItems: 3000
+            minItems: 2
+          description: Each route's `corridor_line` from the plan, as [lat, lon] points.
+          maxItems: 3
+          minItems: 1
+        departure:
+          type: string
+          format: date-time
+        load_weight_lb:
+          type: integer
+          maximum: 80000
+          minimum: 0
+      required:
+      - departure
+      - lines
+      - load_weight_lb
+    CriterionEnum:
+      enum:
+      - no_travel_miles
+      - severe_miles
+      - high_miles
+      - average_risk
+      - travel_time
+      - tie
+      type: string
+      description: |-
+        * `no_travel_miles` - no_travel_miles
+        * `severe_miles` - severe_miles
+        * `high_miles` - high_miles
+        * `average_risk` - average_risk
+        * `travel_time` - travel_time
+        * `tie` - tie
+    Error:
+      type: object
+      description: Shape of every error response (documented in the OpenAPI schema).
+      properties:
+        error:
+          type: string
+        fields:
+          type: object
+          additionalProperties: {}
+          description: Per-field validation messages.
+      required:
+      - error
+    Factor:
+      type: object
+      properties:
+        condition:
+          $ref: '#/components/schemas/ConditionEnum'
+        level:
+          $ref: '#/components/schemas/RiskLevelEnum'
+        load_rule:
+          type: string
+          nullable: true
+      required:
+      - condition
+      - level
+      - load_rule
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+      - status
+    IntervalMilesEnum:
+      enum:
+      - 10
+      - 25
+      - 50
+      type: integer
+      description: |-
+        * `10` - 10
+        * `25` - 25
+        * `50` - 50
+    KindEnum:
+      enum:
+      - break
+      - rest
+      type: string
+      description: |-
+        * `break` - break
+        * `rest` - rest
+    LoadRule:
+      type: object
+      properties:
+        min_wind_mph:
+          type: number
+          format: double
+        max_wind_mph:
+          type: number
+          format: double
+        min_load_lb:
+          type: number
+          format: double
+        level:
+          $ref: '#/components/schemas/RiskLevelEnum'
+        description:
+          type: string
+      required:
+      - description
+      - level
+      - max_wind_mph
+      - min_load_lb
+      - min_wind_mph
+    Location:
+      type: object
+      properties:
+        lat:
+          type: number
+          format: double
+          maximum: 90
+          minimum: -90
+        lon:
+          type: number
+          format: double
+          maximum: 180
+          minimum: -180
+        label:
+          type: string
+          default: ''
+          maxLength: 200
+      required:
+      - lat
+      - lon
+    MilesByLevel:
+      type: object
+      properties:
+        low:
+          type: number
+          format: double
+        moderate:
+          type: number
+          format: double
+        high:
+          type: number
+          format: double
+        severe:
+          type: number
+          format: double
+        no_travel:
+          type: number
+          format: double
+      required:
+      - high
+      - low
+      - moderate
+      - no_travel
+      - severe
+    Place:
+      type: object
+      properties:
+        label:
+          type: string
+        lat:
+          type: number
+          format: double
+        lon:
+          type: number
+          format: double
+      required:
+      - label
+      - lat
+      - lon
+    PlaceSearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Place'
+      required:
+      - results
+    Plan:
+      type: object
+      properties:
+        provider:
+          $ref: '#/components/schemas/Provider'
+        departure:
+          type: string
+          format: date-time
+        load_weight_lb:
+          type: integer
+        gross_weight_lb:
+          type: integer
+        interval_miles:
+          type: integer
+        rest_breaks:
+          type: boolean
+        heatmap_start:
+          type: string
+          format: date-time
+        routes:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutePlan'
+        recommendation:
+          $ref: '#/components/schemas/Recommendation'
+        rules:
+          $ref: '#/components/schemas/RiskRules'
+      required:
+      - departure
+      - gross_weight_lb
+      - heatmap_start
+      - interval_miles
+      - load_weight_lb
+      - provider
+      - recommendation
+      - rest_breaks
+      - routes
+      - rules
+    PlanRequest:
+      type: object
+      properties:
+        origin:
+          $ref: '#/components/schemas/Location'
+        destination:
+          $ref: '#/components/schemas/Location'
+        departure:
+          type: string
+          format: date-time
+          description: ISO 8601 with offset.
+        load_weight_lb:
+          type: integer
+          maximum: 80000
+          minimum: 0
+          description: Cargo weight.
+        interval_miles:
+          allOf:
+          - $ref: '#/components/schemas/IntervalMilesEnum'
+          default: 25
+        rest_breaks:
+          type: boolean
+          default: true
+          description: Add FMCSA hours-of-service breaks to ETAs.
+      required:
+      - departure
+      - destination
+      - load_weight_lb
+      - origin
+    Provider:
+      type: object
+      properties:
+        name:
+          type: string
+        truck_aware:
+          type: boolean
+      required:
+      - name
+      - truck_aware
+    Recommendation:
+      type: object
+      properties:
+        route_id:
+          type: string
+        safe:
+          type: boolean
+        headline:
+          type: string
+        reasons:
+          type: array
+          items:
+            type: string
+        comparisons:
+          type: array
+          items:
+            $ref: '#/components/schemas/Comparison'
+      required:
+      - comparisons
+      - headline
+      - reasons
+      - route_id
+      - safe
+    RiskLevel:
+      type: object
+      properties:
+        key:
+          $ref: '#/components/schemas/RiskLevelEnum'
+        label:
+          type: string
+        score:
+          type: integer
+      required:
+      - key
+      - label
+      - score
+    RiskLevelEnum:
+      enum:
+      - low
+      - moderate
+      - high
+      - severe
+      - no_travel
+      type: string
+      description: |-
+        * `low` - low
+        * `moderate` - moderate
+        * `high` - high
+        * `severe` - severe
+        * `no_travel` - no_travel
+    RiskRules:
+      type: object
+      properties:
+        levels:
+          type: array
+          items:
+            $ref: '#/components/schemas/RiskLevel'
+        wind_mph:
+          type: array
+          items:
+            $ref: '#/components/schemas/Band'
+        rain_in_hr:
+          type: array
+          items:
+            $ref: '#/components/schemas/Band'
+        snow_in_hr:
+          type: array
+          items:
+            $ref: '#/components/schemas/Band'
+        load_rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/LoadRule'
+      required:
+      - levels
+      - load_rules
+      - rain_in_hr
+      - snow_in_hr
+      - wind_mph
+    RoutePlan:
+      type: object
+      properties:
+        id:
+          type: string
+        summary:
+          type: string
+        rank:
+          type: integer
+        recommended:
+          type: boolean
+        distance_mi:
+          type: number
+          format: double
+        drive_time_s:
+          type: integer
+        travel_time_s:
+          type: integer
+          description: Wall-clock trip time including HOS stops.
+        arrival:
+          type: string
+          format: date-time
+        notes:
+          type: array
+          items:
+            type: string
+        risk:
+          $ref: '#/components/schemas/RouteRisk'
+        checkpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/Checkpoint'
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Segment'
+        stops:
+          type: array
+          items:
+            $ref: '#/components/schemas/Stop'
+        positions:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: double
+            maxItems: 3
+            minItems: 3
+          description: 'Every 15 min from heatmap_start for 48 h: [lat, lon, status];
+            status 0 waiting, 1 driving, 2 break, 3 rest, 4 arrived.'
+        corridor_line:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: double
+            maxItems: 2
+            minItems: 2
+          description: Simplified route as [lat, lon].
+      required:
+      - arrival
+      - checkpoints
+      - corridor_line
+      - distance_mi
+      - drive_time_s
+      - id
+      - notes
+      - positions
+      - rank
+      - recommended
+      - risk
+      - segments
+      - stops
+      - summary
+      - travel_time_s
+    RouteRisk:
+      type: object
+      properties:
+        miles_by_level:
+          $ref: '#/components/schemas/MilesByLevel'
+        average:
+          type: number
+          format: double
+          description: Distance-weighted, Low = 0 to No Travel = 4.
+        max_level:
+          $ref: '#/components/schemas/RiskLevelEnum'
+      required:
+      - average
+      - max_level
+      - miles_by_level
+    Segment:
+      type: object
+      properties:
+        checkpoint:
+          type: integer
+        level:
+          $ref: '#/components/schemas/RiskLevelEnum'
+        coordinates:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: double
+            maxItems: 2
+            minItems: 2
+          description: '[lon, lat] points.'
+      required:
+      - checkpoint
+      - coordinates
+      - level
+    Stop:
+      type: object
+      properties:
+        kind:
+          $ref: '#/components/schemas/KindEnum'
+        mile:
+          type: number
+          format: double
+        lat:
+          type: number
+          format: double
+        lon:
+          type: number
+          format: double
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+      required:
+      - end
+      - kind
+      - lat
+      - lon
+      - mile
+      - start
