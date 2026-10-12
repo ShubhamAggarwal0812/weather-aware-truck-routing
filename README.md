@@ -4,7 +4,7 @@ A React + Django app that helps a truck driver pick the safest route. It compare
 
 **Live app:** _link added after deploy_ · **API docs:** `/api/v1/docs` · **Walkthrough:** _Loom link_
 
-![Route comparison with risk-coloured routes and the corridor heatmap](docs/screenshot.png)
+![Route comparison with risk-coloured routes and the corridor heatmap](docs/screenshot.jpg)
 
 ## What it does
 
