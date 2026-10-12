@@ -44,7 +44,7 @@ class OSRMProvider:
             "overview": "full",
             "geometries": "geojson",
             "annotations": "distance,duration",
-            "steps": "false",
+            "steps": "true",  # leg summaries (road names) are only filled in with steps
             "continue_straight": "true",
         }
         try:
@@ -62,7 +62,8 @@ class OSRMProvider:
         # annotation[i] is the segment from coordinate i to i+1, across all legs.
         durations = [d for leg in raw["legs"] for d in leg["annotation"]["duration"]]
         timed = list(enumerate(accumulate(durations, initial=0.0))) if len(durations) == len(points) - 1 else []
-        names = [leg.get("summary", "") for leg in raw["legs"] if leg.get("summary")]
+        names = list(dict.fromkeys(n.strip() for leg in raw["legs"] for n in leg.get("summary", "").split(",")))
+        names = [n for n in names if n][:2]
         return Route.from_timed_points(
             points,
             timed,

@@ -2,6 +2,12 @@
 name = "weather-aware-truck-routing"
 version = "1.0.0"
 requires-python = ">=3.12"
+# Keep in sync with requirements.txt.
+dependencies = [
+    "Django==5.2.18",
+    "djangorestframework==3.18.3",
+    "httpx==0.28.1",
+]
 
 [tool.vercel]
 entrypoint = "config.wsgi:application"
