@@ -93,10 +93,11 @@ def test_tomtom_departs_now_when_departure_is_not_in_the_future():
         (429, "{}", "quota", 503),
     ],
 )
-def test_tomtom_errors(status, body, message, code):
+def test_should_turn_tomtom_errors_into_routing_errors(status, body, message, code):
     respx.get(url__startswith="https://api.tomtom.com/").mock(return_value=httpx.Response(status, text=body))
+    provider = TomTomProvider("k")
     with pytest.raises(RoutingError, match=message) as err:
-        TomTomProvider("k").routes(REQUEST, alternatives=2)
+        provider.routes(REQUEST, alternatives=2)
     assert err.value.status == code
 
 

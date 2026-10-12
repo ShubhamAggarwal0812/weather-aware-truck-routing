@@ -21,9 +21,10 @@ def straight_route(
     summary: str = "",
     steps: int = 200,
     via: LatLon | None = None,
+    through: list[LatLon] | None = None,
 ) -> Route:
     """A route along straight lines (through ``via`` if given) at a constant speed."""
-    legs = [start, via, end] if via else [start, end]
+    legs = [start, *(through or ([via] if via else [])), end]
     points: list[LatLon] = []
     for a, b in pairwise(legs):
         n = steps // (len(legs) - 1)
@@ -84,3 +85,12 @@ class FakeWeather:
 def storm(lat, lon, t):
     """50 mph wind in a band around lon -100 south of 40.8N; calm elsewhere."""
     return (50.0, 0.0, 0.0) if -100.6 <= lon <= -99.4 and lat < 40.8 else (8.0, 0.0, 0.0)
+
+
+def back_and_forth_line(south_latitude: float, north_latitude: float, legs: int = 8) -> list[LatLon]:
+    points: list[LatLon] = []
+    for leg in range(legs):
+        longitude = -124 + leg * 54 / (legs - 1)
+        ends = [(south_latitude, longitude), (north_latitude, longitude)]
+        points += ends if leg % 2 == 0 else ends[::-1]
+    return points

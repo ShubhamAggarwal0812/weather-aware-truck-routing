@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
-export function Providers({ children }: { children: ReactNode }) {
+export function Providers({ children }: Readonly<{ children: ReactNode }>) {
   const [queryClient] = useState(
     () => new QueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false } } }),
   );

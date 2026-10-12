@@ -41,7 +41,7 @@ def three_roads():
 PLAN_URL = "/api/v1/trips/plan"
 
 
-def test_recommends_the_route_that_avoids_no_travel_wind(client, monkeypatch, departure, three_roads):
+def test_should_recommend_the_route_that_avoids_no_travel_wind(client, monkeypatch, departure, three_roads):
     install(monkeypatch, FakeProvider(three_roads), FakeWeather(storm))
     res = client.post(PLAN_URL, body(departure, load_weight_lb=35_000), format="json")
     assert res.status_code == 200, res.data
@@ -53,7 +53,8 @@ def test_recommends_the_route_that_avoids_no_travel_wind(client, monkeypatch, de
     assert routes["B"]["risk"]["miles_by_level"]["no_travel"] == 0
     assert data["recommendation"]["route_id"] == "B"
     assert data["recommendation"]["safe"] is True
-    assert routes["B"]["recommended"] and routes["B"]["rank"] == 1
+    assert routes["B"]["recommended"]
+    assert routes["B"]["rank"] == 1
     assert any("No Travel" in reason for reason in data["recommendation"]["reasons"])
     storm_cp = next(cp for cp in routes["A"]["checkpoints"] if cp["level"] == "no_travel")
     wind = next(f for f in storm_cp["factors"] if f["condition"] == "wind")
@@ -90,13 +91,15 @@ def test_weather_is_sampled_at_each_checkpoints_eta(client, monkeypatch, departu
     assert data["routes"][0]["risk"]["max_level"] == "low"
 
 
-def test_checkpoint_miles_add_up_to_the_route(client, monkeypatch, departure, three_roads):
+def test_should_add_checkpoint_miles_up_to_the_route(client, monkeypatch, departure, three_roads):
     install(monkeypatch, FakeProvider(three_roads), FakeWeather())
     data = client.post(PLAN_URL, body(departure, interval_miles=10), format="json").json()
     for r in data["routes"]:
         assert sum(r["risk"]["miles_by_level"].values()) == pytest.approx(r["distance_mi"], abs=0.3)
         miles = [cp["mile"] for cp in r["checkpoints"]]
-        assert miles[0] == 0 and miles[1] == 10 and miles[-1] == r["distance_mi"]
+        assert miles[0] == 0
+        assert miles[1] == 10
+        assert miles[-1] == r["distance_mi"]
 
 
 def test_rest_breaks_push_back_long_trip_etas(client, monkeypatch, departure):
@@ -111,14 +114,15 @@ def test_rest_breaks_push_back_long_trip_etas(client, monkeypatch, departure):
     assert [s["kind"] for s in with_breaks["stops"]] == ["break", "rest", "break", "rest"]
 
 
-def test_positions_follow_the_trip(client, monkeypatch, departure):
+def test_should_follow_the_trip_with_the_truck_positions(client, monkeypatch, departure):
     install(monkeypatch, FakeProvider([straight_route(ORIGIN, DEST)]), FakeWeather())
     data = client.post(PLAN_URL, body(departure), format="json").json()
     positions = data["routes"][0]["positions"]
     assert len(positions) == 48 * 4 + 1
     codes = [p[2] for p in positions]
     assert codes[0] == 0  # the window starts at the top of the departure hour, before departure
-    assert 1 in codes and codes[-1] == 4
+    assert 1 in codes
+    assert codes[-1] == 4
     assert positions[-1][:2] == pytest.approx(list(DEST), abs=1e-3)
 
 

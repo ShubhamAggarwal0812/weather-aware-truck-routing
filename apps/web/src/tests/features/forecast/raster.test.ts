@@ -60,6 +60,37 @@ describe("paint", () => {
     // Top-right corner has no cell: fully transparent.
     expect(pixel(0.99, 0.01)[3]).toBe(0);
   });
+
+  it("should colour categorical layers from the nearest cell, with no in-between values", () => {
+    const reds = (categorical: boolean) => {
+      const image = new Uint8ClampedArray(sampler.width * sampler.height * 4);
+      paint(sampler, Float32Array.from([0, 10, 10, 0, 10]), ramp, image, undefined, categorical);
+      const found = new Set<number>();
+      for (let pixel = 0; pixel < sampler.width * sampler.height; pixel++) {
+        if (image[pixel * 4 + 3] > 0) found.add(image[pixel * 4]);
+      }
+      return [...found].sort((first, second) => first - second);
+    };
+    expect(reds(true)).toEqual([0, 255]);
+    expect(reds(false).length).toBeGreaterThan(2);
+  });
+});
+
+describe("buildSampler nearest cells", () => {
+  it("should point each pixel at the closest existing cell", () => {
+    const { width, height, nearestCells } = buildSampler(buildLayout(corridor), 10_000);
+    const bottomLeft = Math.floor(height * 0.9) * width + Math.floor(width * 0.1);
+    const topLeft = Math.floor(height * 0.1) * width + Math.floor(width * 0.1);
+    const bottomLeftCell = corridor.rows.findIndex((row, index) => row === 40 && corridor.cols[index] === -100);
+    const topLeftCell = corridor.rows.findIndex((row, index) => row === 41 && corridor.cols[index] === -100);
+    expect(nearestCells[bottomLeft]).toBe(bottomLeftCell);
+    expect(nearestCells[topLeft]).toBe(topLeftCell);
+  });
+
+  it("should have no nearest cell where none of the four around a pixel exists", () => {
+    const { width, nearestCells } = buildSampler(buildLayout(corridor), 10_000);
+    expect(nearestCells[Math.floor(width * 0.99)]).toBe(-1);
+  });
 });
 
 describe("valuesAt", () => {

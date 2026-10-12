@@ -47,3 +47,7 @@ export const timeZoneName = () =>
   new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
     .formatToParts(new Date())
     .find((p) => p.type === "timeZoneName")?.value ?? "";
+
+export function formatRanges(text: string): string {
+  return text.replaceAll(/(\d)-(\d)/g, "$1\u2060\u2013\u2060$2");
+}

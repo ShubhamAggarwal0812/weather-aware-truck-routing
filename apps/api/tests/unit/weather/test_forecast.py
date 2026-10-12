@@ -1,13 +1,14 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
 import respx
 
 from apps.weather.exceptions import WeatherError
-from apps.weather.forecast import HourlySeries, OpenMeteoClient
+from apps.weather.forecast import HourlySeries, OpenMeteoClient, _filled
 
 T0 = datetime(2026, 10, 13, 12, tzinfo=UTC)
 URL = "https://api.open-meteo.com/v1/forecast"
@@ -44,6 +45,30 @@ def test_hour_index_conditions():
     assert (s.wind_mph, s.rain_in_hr, s.snow_in_hr) == (20.0, 0.6, 1.5)
 
 
+def _form(request):
+    return {name: values[0] for name, values in parse_qs(request.content.decode()).items()}
+
+
+def _window(form):
+    start, end = (
+        datetime.strptime(form[name], "%Y-%m-%dT%H:%M").replace(tzinfo=UTC) for name in ("start_hour", "end_hour")
+    )
+    return start, int((end - start) / timedelta(hours=1)) + 1
+
+
+def _answer(request):
+    form = _form(request)
+    start, hours = _window(form)
+    points = zip(form["latitude"].split(","), form["longitude"].split(","))
+    return httpx.Response(
+        200, json=[_location(float(latitude), float(longitude), start, hours) for latitude, longitude in points]
+    )
+
+
+def _client():
+    return OpenMeteoClient(base_url="https://api.open-meteo.com", api_key="")
+
+
 def _location(lat, lon, start, hours, wind=12.0):
     times = [(start + timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M") for h in range(hours)]
     n = len(times)
@@ -63,16 +88,16 @@ def _location(lat, lon, start, hours, wind=12.0):
 
 
 @respx.mock
-def test_batches_points_and_sums_rain_and_showers():
+def test_should_batch_points_and_sum_rain_and_showers():
     def handler(request):
-        form = dict(x.split("=", 1) for x in request.content.decode().split("&"))
-        lats = form["latitude"].split("%2C")
-        assert form["wind_speed_unit"] == "mph" and form["precipitation_unit"] == "inch"
-        return httpx.Response(200, json=[_location(float(a), 0, T0, 4) for a in lats])
+        form = _form(request)
+        assert form["wind_speed_unit"] == "mph"
+        assert form["precipitation_unit"] == "inch"
+        return _answer(request)
 
     route = respx.post(URL).mock(side_effect=handler)
     points = [(30 + i * 0.01, -90.0) for i in range(250)]
-    out = OpenMeteoClient(base_url="https://api.open-meteo.com", api_key="").hourly(points, T0, T0 + timedelta(hours=3))
+    out = _client().hourly(points, T0, T0 + timedelta(hours=3))
     assert route.call_count == 5  # batches of 50
     assert len(out) == 250
     assert out[0].rain_in[0] == pytest.approx(0.15)
@@ -80,30 +105,128 @@ def test_batches_points_and_sums_rain_and_showers():
 
 
 @respx.mock
-def test_results_are_cached_per_point_and_window():
-    route = respx.post(URL).mock(return_value=httpx.Response(200, json=_location(30, -90, T0, 3)))
-    client = OpenMeteoClient(base_url="https://api.open-meteo.com", api_key="")
+def test_should_fetch_whole_days_from_the_start():
+    route = respx.post(URL).mock(side_effect=_answer)
+    (series,) = _client().hourly([(30, -90)], T0, T0 + timedelta(hours=30))
+    assert _window(_form(route.calls.last.request)) == (T0, 49)
+    assert series.last_hour == T0 + timedelta(hours=48)
+
+
+@respx.mock
+def test_should_reuse_the_cached_day_for_a_later_arrival_from_the_same_start_hour():
+    route = respx.post(URL).mock(side_effect=_answer)
+    client = _client()
     client.hourly([(30, -90)], T0, T0 + timedelta(hours=2))
-    client.hourly([(30, -90)], T0, T0 + timedelta(hours=2))
+    client.hourly([(30, -90)], T0 + timedelta(minutes=40), T0 + timedelta(hours=20))
     assert route.call_count == 1
 
 
 @respx.mock
-def test_rate_limit_becomes_a_user_facing_error():
+def test_should_fetch_again_when_the_arrival_is_past_the_cached_series():
+    route = respx.post(URL).mock(side_effect=_answer)
+    client = _client()
+    client.hourly([(30, -90)], T0, T0 + timedelta(hours=2))
+    client.hourly([(30, -90)], T0, T0 + timedelta(hours=30))
+    assert route.call_count == 2
+
+
+@respx.mock
+def test_should_turn_the_rate_limit_into_a_user_facing_error():
     respx.post(URL).mock(return_value=httpx.Response(429, json={"reason": "limit"}))
+    client = _client()
     with pytest.raises(WeatherError, match="rate limit"):
-        OpenMeteoClient(base_url="https://api.open-meteo.com", api_key="").hourly([(30, -90)], T0, T0)
+        client.hourly([(30, -90)], T0, T0)
 
 
 @respx.mock
-def test_misaligned_time_window_is_rejected():
+def test_should_reject_a_misaligned_time_window():
     respx.post(URL).mock(return_value=httpx.Response(200, json=_location(30, -90, T0 + timedelta(hours=1), 3)))
+    client = _client()
     with pytest.raises(WeatherError, match="time window"):
-        OpenMeteoClient(base_url="https://api.open-meteo.com", api_key="").hourly([(30, -90)], T0, T0)
+        client.hourly([(30, -90)], T0, T0)
 
 
 @respx.mock
-def test_slow_batches_are_hedged(monkeypatch):
+def test_should_reject_a_series_that_stops_short():
+    def handler(request):
+        start, hours = _window(_form(request))
+        return httpx.Response(200, json=_location(30, -90, start, hours - 5))
+
+    respx.post(URL).mock(side_effect=handler)
+    client, end = _client(), T0 + timedelta(hours=20)
+    with pytest.raises(WeatherError, match="time window"):
+        client.hourly([(30, -90)], T0, end)
+
+
+@respx.mock
+def test_should_reject_a_response_that_leaves_out_a_variable():
+    def handler(request):
+        start, hours = _window(_form(request))
+        location = _location(30, -90, start, hours)
+        del location["hourly"]["showers"]
+        return httpx.Response(200, json=location)
+
+    respx.post(URL).mock(side_effect=handler)
+    client, end = _client(), T0 + timedelta(hours=2)
+    with pytest.raises(WeatherError, match="incomplete"):
+        client.hourly([(30, -90)], T0, end)
+
+
+@respx.mock
+def test_should_reject_a_location_without_hourly_data():
+    respx.post(URL).mock(return_value=httpx.Response(200, json={"latitude": 30, "longitude": -90}))
+    client = _client()
+    with pytest.raises(WeatherError, match="time window"):
+        client.hourly([(30, -90)], T0, T0)
+
+
+def test_should_fill_short_gaps_with_the_nearest_earlier_value():
+    assert _filled([None, 1.0, None, None, 2.0, None]) == (1.0, 1.0, 1.0, 1.0, 2.0, 2.0)
+
+
+def test_should_reject_a_gap_longer_than_three_hours():
+    with pytest.raises(WeatherError, match="incomplete"):
+        _filled([5.0, 6.0, None, None, None, None])
+
+
+def test_should_give_a_variable_with_no_values_its_default():
+    assert _filled([None, None], default=0.0) == (0.0, 0.0)
+
+
+def test_should_reject_a_variable_with_no_values_and_no_default():
+    with pytest.raises(WeatherError, match="incomplete"):
+        _filled([None, None])
+
+
+@respx.mock
+def test_should_reject_a_forecast_without_any_wind_rather_than_score_it_as_calm():
+    def handler(request):
+        start, hours = _window(_form(request))
+        location = _location(30, -90, start, hours)
+        location["hourly"]["wind_speed_10m"] = [None] * hours
+        return httpx.Response(200, json=location)
+
+    respx.post(URL).mock(side_effect=handler)
+    client, end = _client(), T0 + timedelta(hours=2)
+    with pytest.raises(WeatherError, match="incomplete"):
+        client.hourly([(30, -90)], T0, end)
+
+
+@respx.mock
+def test_should_read_a_forecast_without_any_showers_as_no_showers():
+    def handler(request):
+        start, hours = _window(_form(request))
+        location = _location(30, -90, start, hours)
+        location["hourly"]["showers"] = [None] * hours
+        return httpx.Response(200, json=location)
+
+    respx.post(URL).mock(side_effect=handler)
+    (series,) = _client().hourly([(30, -90)], T0, T0 + timedelta(hours=2))
+    assert set(series.rain_in) == {0.1}
+
+
+@respx.mock
+def test_should_hedge_a_slow_batch(monkeypatch):
     monkeypatch.setattr("apps.weather.forecast.HEDGE_AFTER_S", 0.05)
     attempts = ThreadPoolExecutor(max_workers=2)
     monkeypatch.setattr("apps.weather.forecast._attempts", attempts)
@@ -113,7 +236,7 @@ def test_slow_batches_are_hedged(monkeypatch):
         calls.append(time.monotonic())
         if len(calls) == 1:
             time.sleep(1.0)  # the first attempt hangs
-        return httpx.Response(200, json=_location(30, -90, T0, 3))
+        return _answer(request)
 
     respx.post(URL).mock(side_effect=handler)
     started = time.monotonic()
@@ -124,3 +247,38 @@ def test_slow_batches_are_hedged(monkeypatch):
     assert len(calls) == 2
     assert time.monotonic() - started < 0.8  # answered by the hedge, not the slow attempt
     attempts.shutdown(wait=True)  # let the abandoned attempt finish inside the test
+
+
+@respx.mock
+def test_should_not_hedge_a_batch_that_only_waited_for_a_free_worker(monkeypatch):
+    attempts = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr("apps.weather.forecast._attempts", attempts)
+    monkeypatch.setattr("apps.weather.forecast.HEDGE_AFTER_S", 0.2)
+    route = respx.post(URL).mock(side_effect=_answer)
+    another_batch_holding_the_only_worker = attempts.submit(time.sleep, 0.6)
+    _client().hourly([(30, -90)], T0, T0 + timedelta(hours=2))
+    assert another_batch_holding_the_only_worker.done()
+    attempts.shutdown(wait=True)
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_should_not_send_a_hedge_that_is_still_queued_when_the_first_attempt_answers(monkeypatch):
+    attempts = ThreadPoolExecutor(max_workers=2)
+    monkeypatch.setattr("apps.weather.forecast._attempts", attempts)
+    monkeypatch.setattr("apps.weather.forecast.HEDGE_AFTER_S", 0.1)
+
+    def slow_enough_to_hedge(request):
+        time.sleep(0.3)
+        return _answer(request)
+
+    route = respx.post(URL).mock(side_effect=slow_enough_to_hedge)
+    client = _client()
+    frees_a_worker_for_the_first_attempt = attempts.submit(time.sleep, 0.2)
+    time.sleep(0.05)
+    busy_until_after_the_answer = attempts.submit(time.sleep, 1.0)
+    client.hourly([(30, -90)], T0, T0 + timedelta(hours=2))
+    attempts.shutdown(wait=True)
+    assert frees_a_worker_for_the_first_attempt.done()
+    assert busy_until_after_the_answer.done()
+    assert route.call_count == 1

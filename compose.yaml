@@ -9,13 +9,28 @@ services:
         required: false
     environment:
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,api
+      # Both gunicorn workers must share the rate-limit counters, or each allows the full rate.
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7.4-alpine
+    # Rate-limit counters are worthless after a restart, so nothing is persisted and the oldest go first when full.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   web:
     build:
       context: .
       dockerfile: infra/docker/web.Dockerfile
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${WEB_PORT:-8080}:8080"
     depends_on:
       api:
         condition: service_healthy

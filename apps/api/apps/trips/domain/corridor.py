@@ -9,16 +9,27 @@ until the corridor fits ``max_cells``, which bounds the cost of a long trip.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
+from common.exceptions import ServiceError
 from common.geo import METERS_PER_MILE, LatLon, cumulative_distances, haversine_m, point_at_distance
 
 STEPS_DEG = (0.1, 0.125, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 1.0)
 DEFAULT_BUFFER_M = 30 * METERS_PER_MILE
 # Each cell is one Open-Meteo call; the free tier allows 600 a minute per IP.
 DEFAULT_MAX_CELLS = 300
+# The lines come from the client and every cell costs an Open-Meteo call, so even the
+# coarsest grid stops here; three real coast-to-coast routes come to 250-300 cells.
+MAX_CELLS = 600
 METERS_PER_DEG_LAT = 111_195.0
+
+
+class CorridorTooLarge(ServiceError):
+    default_status = 422
+
+    def __init__(self) -> None:
+        super().__init__("These routes cover too much ground for the weather heatmap.")
 
 
 @dataclass(frozen=True)
@@ -35,7 +46,9 @@ class CorridorGrid:
         return [self.center(c) for c in self.cells]
 
 
-def _cells_for(routes: Sequence[Sequence[LatLon]], step: float, buffer_m: float) -> set[tuple[int, int]]:
+def _cells_for(
+    routes: Sequence[Sequence[LatLon]], step: float, buffer_m: float, limit: int
+) -> set[tuple[int, int]] | None:
     cells: set[tuple[int, int]] = set()
     sample_m = step * METERS_PER_DEG_LAT / 2
     # A cell is kept when its centre is within buffer + half a diagonal of the route,
@@ -45,20 +58,30 @@ def _cells_for(routes: Sequence[Sequence[LatLon]], step: float, buffer_m: float)
         if len(points) < 2:
             continue
         cum = cumulative_distances(points)
-        d = 0.0
-        while True:
-            lat, lon = point_at_distance(points, cum, d)
-            r0, c0 = round(lat / step), round(lon / step)
-            dr = math.ceil(reach_m / (step * METERS_PER_DEG_LAT))
-            dc = math.ceil(reach_m / (step * METERS_PER_DEG_LAT * max(0.2, math.cos(math.radians(lat)))))
-            for r in range(r0 - dr, r0 + dr + 1):
-                for c in range(c0 - dc, c0 + dc + 1):
-                    if (r, c) not in cells and haversine_m((lat, lon), (r * step, c * step)) <= reach_m:
-                        cells.add((r, c))
-            if d >= cum[-1]:
-                break
-            d = min(cum[-1], d + sample_m)
+        for distance in _sample_distances(cum[-1], sample_m):
+            _add_cells_near(cells, point_at_distance(points, cum, distance), step, reach_m)
+            if len(cells) > limit:
+                return None
     return cells
+
+
+def _sample_distances(length_meters: float, step_meters: float) -> Iterator[float]:
+    distance = 0.0
+    while distance < length_meters:
+        yield distance
+        distance += step_meters
+    yield length_meters
+
+
+def _add_cells_near(cells: set[tuple[int, int]], point: LatLon, step: float, reach_meters: float) -> None:
+    latitude = point[0]
+    row_center, column_center = round(latitude / step), round(point[1] / step)
+    rows = math.ceil(reach_meters / (step * METERS_PER_DEG_LAT))
+    columns = math.ceil(reach_meters / (step * METERS_PER_DEG_LAT * max(0.2, math.cos(math.radians(latitude)))))
+    for row in range(row_center - rows, row_center + rows + 1):
+        for column in range(column_center - columns, column_center + columns + 1):
+            if (row, column) not in cells and haversine_m(point, (row * step, column * step)) <= reach_meters:
+                cells.add((row, column))
 
 
 def _estimated_cells(total_length_m: float, step: float, buffer_m: float, mean_lat: float) -> float:
@@ -80,10 +103,10 @@ def corridor_grid(
     # Alternatives share road, so the summed length overestimates the corridor. Skip
     # steps that would be over budget even if the routes overlapped by half.
     steps = [s for s in STEPS_DEG if _estimated_cells(total_m, s, buffer_m, mean_lat) * 0.5 <= max_cells]
-    cells: set[tuple[int, int]] = set()
     for step in steps or STEPS_DEG[-1:]:
-        cells = _cells_for(routes, step, buffer_m)
-        if len(cells) <= max_cells:
+        # Continental trips don't fit the budget at any step, so the coarsest grid may exceed it up to the hard cap.
+        limit = max(max_cells, MAX_CELLS) if step == STEPS_DEG[-1] else max_cells
+        cells = _cells_for(routes, step, buffer_m, limit)
+        if cells is not None:
             return CorridorGrid(step, tuple(sorted(cells)))
-    # Continental-scale trips: keep the coarsest grid even if it's over budget.
-    return CorridorGrid(STEPS_DEG[-1], tuple(sorted(cells)))
+    raise CorridorTooLarge()

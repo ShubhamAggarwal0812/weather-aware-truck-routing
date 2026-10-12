@@ -9,6 +9,7 @@ dependencies = [
     "drf-spectacular>=0.28",
     "httpx>=0.28",
     "gunicorn>=23",
+    "redis>=5",
 ]
 
 [dependency-groups]

@@ -5,6 +5,7 @@ rate-limit counters live in the cache.
 """
 
 import os
+import warnings
 from pathlib import Path
 
 API_DIR = Path(__file__).resolve().parents[2]
@@ -35,6 +36,11 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 def env_list(name: str, default: str) -> list[str]:
     return [item.strip() for item in env(name, default).split(",") if item.strip()]
+
+
+def env_int(name: str, default: int) -> int:
+    value = env(name).strip()
+    return int(value) if value else default
 
 
 DEBUG = False
@@ -71,12 +77,39 @@ TEMPLATES = [
 
 DATABASES: dict = {}
 
-CACHES = {
+
+def redis_url() -> str:
+    # Some Vercel Redis integrations name it KV_URL. An https:// REST URL speaks a different protocol, so it is
+    # ignored rather than left to fail every rate-limited request.
+    for name in ("REDIS_URL", "KV_URL"):
+        value = env(name).strip()
+        if value.startswith(("redis://", "rediss://")):
+            return value
+        if value:
+            warnings.warn(f"{name} isn't a redis:// or rediss:// URL; ignoring it.", stacklevel=1)
+    return ""
+
+
+# Rate-limit counters only hold when every worker and instance shares them, so they go to Redis. Cached plans and
+# forecasts stay in each process: they are large and cheap to rebuild, and the free hosted Redis moves only about
+# 100 kilobytes a second.
+REDIS_URL = redis_url()
+CACHES: dict = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
         "LOCATION": "truck-routing",
         "OPTIONS": {"MAX_ENTRIES": 5000},
-    }
+    },
+    "limits": (
+        {
+            "BACKEND": "common.cache.FailOpenRedisCache",
+            "LOCATION": REDIS_URL,
+            # An unreachable Redis must cost a request a second at most, not a hang.
+            "OPTIONS": {"socket_connect_timeout": 1, "socket_timeout": 1},
+        }
+        if REDIS_URL
+        else {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "rate-limits"}
+    ),
 }
 
 USE_TZ = True
@@ -90,7 +123,10 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
     "UNAUTHENTICATED_USER": None,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
+    "DEFAULT_THROTTLE_CLASSES": ["common.api.throttling.SharedScopedRateThrottle"],
+    # Only the last X-Forwarded-For entry comes from our proxy (nginx appends it, Vercel replaces the header with it);
+    # the rest is whatever the client sent.
+    "NUM_PROXIES": env_int("NUM_PROXIES", 1),
     "DEFAULT_THROTTLE_RATES": {
         "plan": env("THROTTLE_PLAN", "30/min"),
         "corridor": env("THROTTLE_CORRIDOR", "30/min"),

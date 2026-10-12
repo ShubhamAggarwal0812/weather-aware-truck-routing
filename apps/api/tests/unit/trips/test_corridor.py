@@ -1,5 +1,8 @@
-from apps.trips.domain.corridor import corridor_grid
+import pytest
+
+from apps.trips.domain.corridor import MAX_CELLS, CorridorTooLarge, corridor_grid
 from common.geo import METERS_PER_MILE, haversine_m
+from tests.fakes import back_and_forth_line
 
 
 def test_cells_cover_the_route_within_the_buffer():
@@ -27,3 +30,19 @@ def test_cells_are_on_a_global_grid():
     for lat, lon in grid.centers:
         assert abs(lat / grid.step_deg - round(lat / grid.step_deg)) < 1e-6
         assert abs(lon / grid.step_deg - round(lon / grid.step_deg)) < 1e-6
+
+
+def test_should_let_the_coarsest_grid_exceed_the_budget_for_a_continental_trip():
+    coast_to_coast = [
+        [(start_latitude + step * 0.2, -122.0 + step * 0.5) for step in range(101)]
+        for start_latitude in (26.0, 32.0, 38.0)
+    ]
+    grid = corridor_grid(coast_to_coast, max_cells=200)
+    assert grid.step_deg == 1.0
+    assert 200 < len(grid.cells) <= MAX_CELLS
+
+
+def test_should_refuse_a_corridor_that_exceeds_the_hard_cap_even_on_the_coarsest_grid():
+    blanket_of_lines = [back_and_forth_line(26, 34), back_and_forth_line(34, 42), back_and_forth_line(42, 49)]
+    with pytest.raises(CorridorTooLarge):
+        corridor_grid(blanket_of_lines)

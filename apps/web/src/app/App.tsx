@@ -1,11 +1,11 @@
-import { Suspense, lazy, useEffect, useRef } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { Spinner } from "@/components/ui/Spinner";
 import { Timeline, useForecastView } from "@/features/forecast";
 import { CheckpointList, Recommendation, RouteCards, useRouteSelection } from "@/features/route-comparison";
 import { TripForm, usePlanTrip } from "@/features/trip-planner";
 import { ApiError, fieldMessages } from "@/lib/api/client";
-import type { PlanRequest } from "@/lib/api/types";
+import type { Plan, PlanRequest } from "@/lib/api/types";
 import { formatDateTime } from "@/lib/format";
 
 // MapLibre is most of the bundle; the form renders while it loads.
@@ -13,7 +13,8 @@ const MapView = lazy(() => import("@/features/route-map/MapView"));
 
 export function App() {
   const planning = usePlanTrip();
-  const plan = planning.data ?? null;
+  // A mutation clears its data as soon as the next one starts, which would blank the results while re-planning.
+  const [plan, setPlan] = useState<Plan | null>(null);
   const selectedId = useRouteSelection((s) => s.selectedId);
   const selectedRoute = plan?.routes.find((r) => r.id === selectedId);
   const planError = planning.error instanceof ApiError ? planning.error : null;
@@ -31,6 +32,7 @@ export function App() {
       onSuccess: (result) => {
         useRouteSelection.getState().reset(result.recommendation.route_id);
         useForecastView.getState().rewind();
+        setPlan(result);
       },
     });
 
@@ -55,6 +57,7 @@ export function App() {
                   {m}
                 </div>
               ))}
+              {plan && <div className="mt-1 text-xs text-red-600">The results below are from the previous plan.</div>}
             </div>
           )}
 
@@ -96,12 +99,12 @@ export function App() {
           </ErrorBoundary>
 
           {planning.isPending && (
-            <div className="pointer-events-none absolute inset-x-0 top-4 flex justify-center px-4" role="status">
+            <output className="pointer-events-none absolute inset-x-0 top-4 flex justify-center px-4">
               <div className="flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-xs font-medium text-white shadow-lg">
                 <Spinner tone="light" className="h-3.5 w-3.5" />
                 Routing, then checking the forecast at every checkpoint…
               </div>
-            </div>
+            </output>
           )}
 
           {!plan && !planning.isPending && (

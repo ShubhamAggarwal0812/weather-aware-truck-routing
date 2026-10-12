@@ -26,10 +26,11 @@ def test_point_at_distance_and_slice():
     assert part[-1] == pytest.approx((0.0, 1.5))
 
 
-def test_simplify_drops_collinear_points_and_keeps_corners():
+def test_should_drop_collinear_points_and_keep_corners_when_simplifying():
     pts = [(0.0, i * 0.01) for i in range(50)] + [(i * 0.01, 0.49) for i in range(1, 50)]
     out = simplify(pts, 10)
-    assert out[0] == pts[0] and out[-1] == pts[-1]
+    assert out[0] == pts[0]
+    assert out[-1] == pts[-1]
     assert (0.0, 0.49) in out
     assert len(out) == 3
 

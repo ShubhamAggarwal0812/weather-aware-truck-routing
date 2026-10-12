@@ -1,6 +1,6 @@
 import type { Plan } from "@/lib/api/types";
 
-export function Recommendation({ plan }: { plan: Plan }) {
+export function Recommendation({ plan }: Readonly<{ plan: Plan }>) {
   const { recommendation: rec } = plan;
   return (
     <section

@@ -24,7 +24,7 @@ interface Props {
 }
 
 /** Accessible combobox over the place-search API. */
-export function PlaceInput({ label, value, onChange, placeholder, invalid }: Props) {
+export function PlaceInput({ label, value, onChange, placeholder, invalid }: Readonly<Props>) {
   const id = useId();
   const [text, setText] = useState(value?.label ?? "");
   const [picked, setPicked] = useState(value?.label ?? "");
@@ -32,12 +32,16 @@ export function PlaceInput({ label, value, onChange, placeholder, invalid }: Pro
   const [active, setActive] = useState(0);
 
   // Follow outside changes (swap button, example trips) without fighting the user's typing.
+  // Typing clears the value too, but then the text no longer matches the picked label.
   const [prevValue, setPrevValue] = useState(value);
   if (value !== prevValue) {
     setPrevValue(value);
     if (value) {
       setText(value.label ?? "");
       setPicked(value.label ?? "");
+    } else if (text === picked) {
+      setText("");
+      setPicked("");
     }
   }
 

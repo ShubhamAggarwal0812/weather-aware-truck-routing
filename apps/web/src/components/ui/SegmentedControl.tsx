@@ -3,6 +3,13 @@ interface Option<T extends string | number> {
   label: string;
 }
 
+const STEP_BY_KEY: Readonly<Partial<Record<string, number>>> = {
+  ArrowRight: 1,
+  ArrowDown: 1,
+  ArrowLeft: -1,
+  ArrowUp: -1,
+};
+
 interface Props<T extends string | number> {
   label: string;
   options: Option<T>[];
@@ -18,7 +25,7 @@ export function SegmentedControl<T extends string | number>({
   value,
   onChange,
   size = "md",
-}: Props<T>) {
+}: Readonly<Props<T>>) {
   const pad = size === "sm" ? "px-2 py-1 text-xs" : "py-1.5 text-sm";
   return (
     <div
@@ -39,12 +46,7 @@ export function SegmentedControl<T extends string | number>({
             onClick={() => onChange(option.value)}
             onKeyDown={(e) => {
               const i = options.findIndex((o) => o.value === value);
-              const step =
-                e.key === "ArrowRight" || e.key === "ArrowDown"
-                  ? 1
-                  : e.key === "ArrowLeft" || e.key === "ArrowUp"
-                    ? -1
-                    : 0;
+              const step = STEP_BY_KEY[e.key] ?? 0;
               if (!step) return;
               e.preventDefault();
               const next = options[(i + step + options.length) % options.length];

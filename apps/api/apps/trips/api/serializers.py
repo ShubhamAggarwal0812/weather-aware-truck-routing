@@ -14,12 +14,17 @@ from rest_framework import serializers
 
 from apps.trips.domain.risk import RiskLevel
 from apps.trips.services.planning import Place, TripInput
-from common.geo import haversine_m
+from common.geo import cumulative_distances, haversine_m
 
 MAX_LOAD_LB = 80_000
 INTERVALS_MILES = (10, 25, 50)
 MAX_DAYS_AHEAD = 7
+# Longer than any route a plan can return (16 days of hours-of-service driving at the truck
+# speed cap is about 18,500 kilometres), so it only stops requests that no plan produced.
+MAX_CORRIDOR_LINE_METERS = 20_000_000
 DEPARTURE_GRACE = timedelta(minutes=30)
+
+PER_HOUR_AND_CELL = "[hour][cell]"
 
 RISK_KEYS = [level.key for level in RiskLevel]
 CONDITIONS = ["wind", "rain", "snow"]
@@ -90,6 +95,13 @@ class CorridorRequestSerializer(serializers.Serializer):
     )
     departure = serializers.DateTimeField(validators=[validate_departure])
     load_weight_lb = serializers.IntegerField(min_value=0, max_value=MAX_LOAD_LB)
+
+    def validate_lines(self, lines: list[list[list[float]]]) -> list[list[list[float]]]:
+        for line in lines:
+            length = cumulative_distances([(latitude, longitude) for latitude, longitude in line])[-1]
+            if length > MAX_CORRIDOR_LINE_METERS:
+                raise serializers.ValidationError("Each line must be a route's corridor_line from a plan.")
+        return lines
 
 
 # --- Responses ----------------------------------------------------------------
@@ -254,9 +266,9 @@ class CorridorSerializer(serializers.Serializer):
     rows = serializers.ListField(child=serializers.IntegerField(), help_text="Cell centre latitude = row * step_deg.")
     cols = serializers.ListField(child=serializers.IntegerField(), help_text="Cell centre longitude = col * step_deg.")
     times = serializers.ListField(child=serializers.DateTimeField())
-    wind_mph = serializers.ListField(child=_numbers(), help_text="[hour][cell]")
-    rain_in_hr = serializers.ListField(child=_numbers(), help_text="[hour][cell]")
-    snow_in_hr = serializers.ListField(child=_numbers(), help_text="[hour][cell]")
+    wind_mph = serializers.ListField(child=_numbers(), help_text=PER_HOUR_AND_CELL)
+    rain_in_hr = serializers.ListField(child=_numbers(), help_text=PER_HOUR_AND_CELL)
+    snow_in_hr = serializers.ListField(child=_numbers(), help_text=PER_HOUR_AND_CELL)
     risk = serializers.ListField(
-        child=serializers.ListField(child=serializers.IntegerField()), help_text="[hour][cell] risk score 0-4."
+        child=serializers.ListField(child=serializers.IntegerField()), help_text=f"{PER_HOUR_AND_CELL} risk score 0-4."
     )

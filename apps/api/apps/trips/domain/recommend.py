@@ -11,6 +11,7 @@ is sampling noise, and the next criterion (finally travel time) decides.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from common.geo import METERS_PER_MILE
@@ -34,36 +35,69 @@ class RouteScore:
     def miles(self, level: RiskLevel) -> float:
         return self.meters_by_level.get(level, 0.0) / METERS_PER_MILE
 
-    def sort_key(self) -> tuple[float, float, float, float, float]:
-        return (
-            round(self.miles(RiskLevel.NO_TRAVEL), 1),
-            round(self.miles(RiskLevel.SEVERE), 1),
-            round(self.miles(RiskLevel.HIGH), 1),
-            round(self.average_risk, 2),
-            self.travel_s,
-        )
-
 
 @dataclass(frozen=True)
 class Comparison:
-    """Why the recommended route beats one other route: the first criterion that differs."""
-
     route_id: str
     criterion: str  # "no_travel_miles" | "severe_miles" | "high_miles" | "average_risk" | "travel_time" | "tie"
     recommended_value: float
     other_value: float
 
 
-CRITERIA = ("no_travel_miles", "severe_miles", "high_miles", "average_risk", "travel_time")
+@dataclass(frozen=True)
+class _Criterion:
+    name: str
+    value: Callable[[RouteScore], float]
+    tolerance: float
+    decimal_places: int
 
 
-def rank(scores: list[RouteScore]) -> list[RouteScore]:
-    """Best first. Python's sort is stable, so exact ties keep the provider's order."""
-    return sorted(scores, key=RouteScore.sort_key)
+CRITERIA = (
+    _Criterion("no_travel_miles", lambda score: score.miles(RiskLevel.NO_TRAVEL), 0.1, 2),
+    _Criterion("severe_miles", lambda score: score.miles(RiskLevel.SEVERE), 0.1, 2),
+    _Criterion("high_miles", lambda score: score.miles(RiskLevel.HIGH), 0.1, 2),
+    _Criterion("average_risk", lambda score: score.average_risk, 0.01, 3),
+    _Criterion("travel_time", lambda score: score.travel_s, 60.0, 0),
+)
 
 
-def compare(best: RouteScore, other: RouteScore) -> Comparison:
-    for criterion, a, b in zip(CRITERIA, best.sort_key(), other.sort_key()):
-        if a != b:
-            return Comparison(other.route_id, criterion, a, b)
-    return Comparison(other.route_id, "tie", 0.0, 0.0)
+def _select(scores: list[RouteScore]) -> tuple[RouteScore, dict[str, Comparison]]:
+    remaining = list(scores)
+    ruled_out: dict[str, tuple[_Criterion, RouteScore]] = {}
+    for criterion in CRITERIA:
+        values = {score.route_id: criterion.value(score) for score in remaining}
+        leading_value = min(values.values())
+        # Measured from the leader, not by rounding into buckets, so values a hair apart can't land in different
+        # buckets; and any No Travel at all loses to none, because no amount of it is sampling noise.
+        if criterion.name == "no_travel_miles" and leading_value == 0:
+            kept = {route_id for route_id, value in values.items() if value == 0}
+        else:
+            kept = {route_id for route_id, value in values.items() if value < leading_value + criterion.tolerance}
+        ruled_out.update((score.route_id, (criterion, score)) for score in remaining if score.route_id not in kept)
+        remaining = [score for score in remaining if score.route_id in kept]
+    # The scores arrive in the provider's order, so a full tie goes to the provider's first route.
+    best = remaining[0]
+    comparisons = {
+        route_id: Comparison(
+            route_id,
+            criterion.name,
+            round(criterion.value(best), criterion.decimal_places),
+            round(criterion.value(other), criterion.decimal_places),
+        )
+        for route_id, (criterion, other) in ruled_out.items()
+    }
+    for tied in remaining[1:]:
+        comparisons[tied.route_id] = Comparison(tied.route_id, "tie", 0.0, 0.0)
+    return best, comparisons
+
+
+def recommend(scores: list[RouteScore]) -> tuple[list[RouteScore], list[Comparison]]:
+    if not scores:
+        return [], []
+    best, comparisons = _select(scores)
+    ranking, remaining = [best], [score for score in scores if score is not best]
+    while remaining:
+        next_best, _ = _select(remaining)
+        ranking.append(next_best)
+        remaining.remove(next_best)
+    return ranking, [comparisons[score.route_id] for score in ranking[1:]]
