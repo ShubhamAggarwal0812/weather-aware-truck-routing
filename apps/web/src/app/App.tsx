@@ -1,4 +1,4 @@
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, useEffect, useRef } from "react";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { Spinner } from "@/components/ui/Spinner";
 import { Timeline, useForecastView } from "@/features/forecast";
@@ -17,6 +17,14 @@ export function App() {
   const selectedId = useRouteSelection((s) => s.selectedId);
   const selectedRoute = plan?.routes.find((r) => r.id === selectedId);
   const planError = planning.error instanceof ApiError ? planning.error : null;
+
+  // On phones the results sit below the form; bring them into view once they arrive.
+  const results = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (plan && window.matchMedia("(max-width: 767px)").matches) {
+      results.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [plan]);
 
   const submit = (request: PlanRequest) =>
     planning.mutate(request, {
@@ -51,7 +59,10 @@ export function App() {
           )}
 
           {plan && (
-            <div className={`space-y-4 transition-opacity ${planning.isPending ? "opacity-50" : ""}`}>
+            <div
+              ref={results}
+              className={`scroll-mt-4 space-y-4 transition-opacity ${planning.isPending ? "opacity-50" : ""}`}
+            >
               <div className="text-[11px] text-slate-500">
                 Departing {formatDateTime(plan.departure)} · {plan.load_weight_lb.toLocaleString()} lb load (
                 {plan.gross_weight_lb.toLocaleString()} lb gross)
@@ -70,38 +81,41 @@ export function App() {
         </div>
       </aside>
 
-      <main className="relative order-1 h-[52dvh] shrink-0 md:order-2 md:h-auto md:flex-1">
-        <ErrorBoundary
-          fallback={
-            <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-slate-600">
-              The map couldn't start. It needs a browser with WebGL2.
-            </div>
-          }
-        >
-          <Suspense fallback={<div className="absolute inset-0 animate-pulse bg-slate-200" />}>
-            <MapView plan={plan} />
-          </Suspense>
-        </ErrorBoundary>
+      <main className="order-1 flex h-[68dvh] shrink-0 flex-col md:relative md:order-2 md:h-auto md:flex-1">
+        <div className="relative min-h-0 flex-1">
+          <ErrorBoundary
+            fallback={
+              <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-slate-600">
+                The map couldn't start. It needs a browser with WebGL2.
+              </div>
+            }
+          >
+            <Suspense fallback={<div className="absolute inset-0 animate-pulse bg-slate-200" />}>
+              <MapView plan={plan} />
+            </Suspense>
+          </ErrorBoundary>
 
-        {planning.isPending && (
-          <div className="pointer-events-none absolute inset-x-0 top-4 flex justify-center px-4" role="status">
-            <div className="flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-xs font-medium text-white shadow-lg">
-              <Spinner tone="light" className="h-3.5 w-3.5" />
-              Routing, then checking the forecast at every checkpoint…
+          {planning.isPending && (
+            <div className="pointer-events-none absolute inset-x-0 top-4 flex justify-center px-4" role="status">
+              <div className="flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-xs font-medium text-white shadow-lg">
+                <Spinner tone="light" className="h-3.5 w-3.5" />
+                Routing, then checking the forecast at every checkpoint…
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {!plan && !planning.isPending && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center px-4">
-            <div className="rounded-full bg-white/90 px-4 py-2 text-xs text-slate-600 shadow">
-              Enter a trip to compare routes and see the 48-hour weather along them.
+          {!plan && !planning.isPending && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center px-4">
+              <div className="rounded-full bg-white/90 px-4 py-2 text-xs text-slate-600 shadow">
+                Enter a trip to compare routes and see the 48-hour weather along them.
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
+        {/* Below the map on phones (so it doesn't cover it), floating over it on desktop. */}
         {plan && (
-          <div className="pointer-events-none absolute inset-x-2 bottom-2 md:inset-x-auto md:bottom-4 md:left-1/2 md:w-[640px] md:-translate-x-1/2">
+          <div className="border-t border-slate-200 bg-white p-2 md:pointer-events-none md:absolute md:bottom-4 md:left-1/2 md:w-[640px] md:-translate-x-1/2 md:border-0 md:bg-transparent md:p-0">
             <Timeline plan={plan} />
           </div>
         )}

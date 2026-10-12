@@ -43,7 +43,7 @@ export function Timeline({ plan }: { plan: Plan }) {
   const truck = route ? truckAt(route.positions, hour) : null;
 
   return (
-    <div className="pointer-events-auto rounded-2xl border border-slate-200/80 bg-white/95 p-3 shadow-xl backdrop-blur">
+    <div className="pointer-events-auto md:rounded-2xl md:border md:border-slate-200/80 md:bg-white/95 md:p-3 md:shadow-xl md:backdrop-blur">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <button
@@ -107,7 +107,10 @@ export function Timeline({ plan }: { plan: Plan }) {
           {[0, 12, 24, 36, 48].map((h) => (
             <span
               key={h}
-              className="absolute -translate-x-1/2 whitespace-nowrap tabular-nums first:translate-x-0 last:-translate-x-full"
+              // Edge labels align inwards so they never stick out of the panel.
+              className={`absolute whitespace-nowrap tabular-nums ${
+                h === 0 ? "" : h === FORECAST_HOURS ? "-translate-x-full" : "-translate-x-1/2"
+              }`}
               style={{ left: `${(h / FORECAST_HOURS) * 100}%` }}
             >
               {h === 0 ? "0 h" : `+${h} h`}

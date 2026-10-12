@@ -2,7 +2,7 @@
 
 A React + Django app that helps a truck driver pick the safest route. It compares three truck routes, checks the forecast at every checkpoint for the hour the truck will actually be there, applies the load-weight rules, and recommends a route. A 48-hour heatmap shows how the weather moves along the corridor.
 
-**Live app:** _link added after deploy_ · **API docs:** `/api/v1/docs` · **Walkthrough:** _Loom link_
+**Live app:** https://weather-truck-routing.vercel.app · **API docs:** https://truck-routing-api.vercel.app/api/v1/docs · **Walkthrough:** _Loom link_
 
 ![Route comparison with risk-coloured routes and the corridor heatmap](docs/screenshot.jpg)
 
@@ -133,7 +133,7 @@ make help                # everything else
 
 ## Deployment
 
-The live app is two Vercel projects from this repo:
+The live app is two Vercel projects from this repo, [weather-truck-routing](https://weather-truck-routing.vercel.app) and [truck-routing-api](https://truck-routing-api.vercel.app/api/v1/health):
 
 - **`apps/api`:** Django as a Python function. Vercel detects `manage.py` and installs from `uv.lock`. Env: `TOMTOM_API_KEY`, `DJANGO_SETTINGS_MODULE=config.settings.production`.
 - **`apps/web`:** the Vite build. `vercel.json` proxies `/api/*` to the API project, so the browser talks to one origin and no CORS is needed.

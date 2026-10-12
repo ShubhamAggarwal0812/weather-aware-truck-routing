@@ -106,6 +106,9 @@ SPECTACULAR_SETTINGS = {
     ),
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    # Pinned so the docs page doesn't change under us.
+    "SWAGGER_UI_DIST": "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.33.2",
+    "SWAGGER_UI_FAVICON_HREF": "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.33.2/favicon-32x32.png",
     "ENUM_NAME_OVERRIDES": {
         "RiskLevelEnum": "apps.trips.api.serializers.RISK_KEYS",
         "ConditionEnum": "apps.trips.api.serializers.CONDITIONS",
