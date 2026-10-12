@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDuration, formatMiles, formatRate, nextQuarterHour } from "@/lib/format";
+import { formatDuration, formatMiles, formatRanges, formatRate, nextQuarterHour } from "@/lib/format";
 
 describe("format", () => {
   it("formats durations", () => {
@@ -20,5 +20,13 @@ describe("format", () => {
     const d = nextQuarterHour(new Date(2026, 9, 12, 10, 7, 30));
     expect([d.getHours(), d.getMinutes()]).toEqual([10, 15]);
     expect(nextQuarterHour(new Date(2026, 9, 12, 10, 59)).getHours()).toBe(11);
+  });
+
+  it("should join a number range with an en dash that a line can't break around", () => {
+    expect(formatRanges("45-54 mph wind")).toBe("45\u2060\u2013\u206054 mph wind");
+  });
+
+  it("should leave hyphens that aren't between numbers alone", () => {
+    expect(formatRanges("fade-in after a 10-hour rest")).toBe("fade-in after a 10-hour rest");
   });
 });

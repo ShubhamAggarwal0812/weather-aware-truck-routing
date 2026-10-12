@@ -46,7 +46,8 @@ apps/web  (React, Vite)                              apps/api  (Django, DRF)
 POST /api/v1/trips/plan
   1. Routes       TomTom truck routing, gross weight = 35,000 lb tare + load, 65 mph cap.
                   The main request (asking for 2 alternatives) and two detour requests run in
-                  parallel. Detours are kept only if distinct and at most 1.6x as slow.
+                  parallel. Detours are kept only if distinct, at most 1.6 times as slow, and not
+                  doubling back (a forced via point can send a route down a dead end and back).
   2. Checkpoints  mile 0, every N miles, and the destination.
   3. ETAs         TomTom's per-point travel times, plus FMCSA breaks if enabled.
   4. Weather      one batched Open-Meteo fetch for every checkpoint on every route, at its ETA.
@@ -72,9 +73,9 @@ The brief leaves some choices open. These are the ones made; each is in code and
 | Rain / snow rate | Open-Meteo hourly totals in inches: rain + showers for rain, snowfall (depth, not water equivalent) for snow. |
 | Weather timing | Wind and temperature are instantaneous, so they're interpolated to the exact ETA. Precipitation totals cover the hour *ending* at each timestamp, so a truck at 14:37 gets the 14:00–15:00 total. |
 | "Severe miles" | Each checkpoint stands for the road from the midpoint with its previous checkpoint to the midpoint with its next. These stretches add up to the route length exactly. |
-| No Travel | Not in the spec's ranking list, but worse than Severe, so No Travel miles are compared first. If every route has some, the app says no route is safe and recommends the least exposed. |
+| No Travel | Not in the spec's ranking list, but worse than Severe, so No Travel miles are compared first, and any No Travel loses to none. If every route has some, the app says no route is safe and recommends the least exposed. |
 | Average risk | Distance-weighted, Low = 0 to No Travel = 4. |
-| Ties | Miles compare at 0.1 mi and average risk at 0.01. Smaller differences are sampling noise, so the next rule decides. |
+| Ties | A route stays in the running while it is within 0.1 miles on mileage, 0.01 on average risk or one minute on travel time of the best remaining route. Smaller differences are sampling noise, so the next rule decides; a full tie keeps the provider's order. |
 | ETAs and HOS | With breaks on, ETAs include a 30-min break after 8 h of driving and a 10-h rest after 11 h, with the driver starting fully rested. The 60/70-hour weekly limit depends on the driver's history and is out of scope. Breaks can be turned off. |
 | "Travel time" | Wall-clock trip time, including breaks. |
 | Heatmap window | 0–48 h from the departure hour, so the slider shows the weather the trip will meet. |
@@ -86,12 +87,12 @@ The brief leaves some choices open. These are the ones made; each is in code and
 |---|---|---|
 | Plan, Salt Lake City → Kansas City at 10-mi checkpoints | ~7 s (TomTom ~5 s, weather ~1.5 s) | ~0.05 s |
 | Corridor forecast (300 grid points × 49 h) | < 1 s | ~0.1 s |
-| Heatmap frame (spatial + temporal interpolation) | ~2 ms | — |
+| Heatmap frame (interpolated, or nearest cell for risk) | about 2 milliseconds | — |
 
 - **Routing is the floor.** TomTom truck routing with alternatives takes about 5 s for a long trip. Detours run alongside it, not after it, which cut cold plans from 14 s to 7 s.
-- **Slow weather requests are hedged.** Open-Meteo's free API usually answers in ~0.3 s but sometimes takes 5–30 s. A batch with no answer after 2.5 s is sent again, and the first response wins, so one slow request can't stall a plan.
-- **Weather calls are budgeted.** Open-Meteo counts each location as a call, with a free-tier limit of 600 a minute per IP. Checkpoints are snapped to a ~5 km grid so overlapping routes share forecasts, and the corridor grid coarsens (0.1° to 1°) until it fits in 300 points. A plan plus its heatmap stays under the per-minute limit. Responses, forecasts and place searches are cached.
-- **The slider is smooth.** Which grid cells and weights feed each heatmap pixel is computed once per trip. A frame is then one pass over the pixels, blending the two nearest forecast hours, so the slider moves in 15-minute steps. The `ImageData` goes straight into a MapLibre image source with no PNG encoding. Rows are spaced in Web Mercator so the overlay lines up at every zoom, and a soft mask drawn along the routes shapes the corridor.
+- **Slow weather requests are hedged.** Open-Meteo's free API usually answers in about 0.3 seconds but sometimes takes 5–30 seconds. A batch with no answer 2.5 seconds after it goes out is sent again, and the first response wins, so one slow request can't stall a plan. Time spent waiting for a free worker doesn't count, and a duplicate that hasn't gone out by the time the first answer arrives is dropped.
+- **Weather calls are budgeted.** Open-Meteo counts each location as a call, with a free-tier limit of 600 a minute per IP. Checkpoints are snapped to a grid of about 5 kilometres so overlapping routes share forecasts, and the corridor grid coarsens (0.1° to 1°) until it fits in 300 points (coast-to-coast trips come to about 250–300). The corridor lines come from the browser, so the endpoint refuses lines longer than any route and grids over 600 points. A plan plus its heatmap stays under the per-minute limit. Responses, forecasts and place searches are cached, forecasts per point and start hour so trips that only differ in arrival time share them.
+- **The slider is smooth.** Which grid cells and weights feed each heatmap pixel is computed once per trip. A frame is then one pass over the pixels, blending the two nearest forecast hours, so the slider moves in 15-minute steps. Risk levels are categories, not amounts, so the risk layer is never blended: each pixel shows its nearest cell's level for the hour the slider is in, and the colours and legend come from the plan's own rules table. The `ImageData` goes straight into a MapLibre image source with no PNG encoding. Rows are spaced in Web Mercator so the overlay lines up at every zoom, and a soft mask drawn along the routes shapes the corridor.
 - **Map updates stay cheap.** Selecting or hovering a route only swaps layer filters; route data is uploaded once. MapLibre (~280 kB gzipped) loads in its own chunk, so the form renders first.
 
 ## API
@@ -129,20 +130,20 @@ make help                # everything else
 
 ## Testing
 
-- **API (138 tests, pytest):** risk bands at every boundary, load rules, HOS arithmetic, checkpoint coverage, ranking order, weather timing, the TomTom and OSRM adapters against hand-built responses in each provider's format (respx), place search, and the endpoints end to end with fake routing and weather. One example: a 50 mph wind band crossed by two of three routes is No Travel for a 35,000 lb load, so the third route wins; with 20,000 lb the same wind is only Severe. Contract tests validate real responses against the schema and fail if `openapi.yaml` is stale.
-- **Web (27 tests, Vitest + Testing Library):** trip form validation and submit payload, route cards and selection, the API client's error handling, heatmap sampling, colour ramps, time blending, and truck positions.
+- **API (186 tests, pytest):** risk bands at every boundary, load rules, HOS arithmetic, checkpoint coverage, ranking order and tolerances, weather timing and hedging, detour filtering, the corridor caps, the rate-limit client key, running on through a Redis outage, the TomTom and OSRM adapters against hand-built responses in each provider's format (respx), place search, and the endpoints end to end with fake routing and weather. One example: a 50 mph wind band crossed by two of three routes is No Travel for a 35,000 lb load, so the third route wins; with 20,000 lb the same wind is only Severe. Contract tests validate real responses against the schema and fail if `openapi.yaml` is stale.
+- **Web (49 tests, Vitest + Testing Library):** trip form validation, submit payload and swap, keeping results up while re-planning, route cards and selection, checkpoint order, the API client's error handling, heatmap sampling (blended and categorical), colour ramps and legend ticks from the rules, time blending, and truck positions.
 - **CI** (`.github/workflows/ci.yml`) runs ruff, mypy, pytest, ESLint, Prettier, tsc, Vitest, the build, the generated-types drift check, and a Docker build.
 
 ## Deployment
 
 The live app is two Vercel projects from this repo, [weather-truck-routing](https://weather-truck-routing.vercel.app) and [truck-routing-api](https://truck-routing-api.vercel.app/api/v1/health):
 
-- **`apps/api`:** Django as a Python function. Vercel detects `manage.py` and installs from `uv.lock`. Env: `TOMTOM_API_KEY`, `DJANGO_SETTINGS_MODULE=config.settings.production`.
+- **`apps/api`:** Django as a Python function. Vercel detects `manage.py` and installs from `uv.lock`. Env: `TOMTOM_API_KEY`, `DJANGO_SETTINGS_MODULE=config.settings.production`, and `REDIS_URL` (Redis from the Vercel Marketplace) for shared rate limits.
 - **`apps/web`:** the Vite build. `vercel.json` proxies `/api/*` to the API project, so the browser talks to one origin and no CORS is needed.
 
 Both projects are connected to this repo: every push to `main` redeploys production, and other branches get preview URLs. Each project's `ignoreCommand` skips the build when nothing under its folder changed since its last deployment, so a frontend-only change doesn't rebuild the API.
 
-`infra/` holds the container setup: `docker/api.Dockerfile` (uv, gunicorn, non-root), `docker/web.Dockerfile` (static build on nginx), and `nginx/web.conf` (SPA, cache headers, `/api` proxy). `compose.yaml` runs both.
+`infra/` holds the container setup: `docker/api.Dockerfile` (uv, gunicorn, non-root), `docker/web.Dockerfile` (static build on nginx), and `nginx/web.conf` (SPA, cache headers, `/api` proxy). `compose.yaml` runs both, plus Redis for the rate-limit counters the two gunicorn workers share.
 
 ## Repository layout
 
@@ -171,6 +172,7 @@ compose.yaml · Makefile · .env.example · .github/workflows/
 ## Limitations
 
 - Open-Meteo's free tier is per IP (600 location-forecasts a minute, 10,000 a day). Serverless hosts share IPs, so heavy use can hit it; the UI then shows a retry. `OPEN_METEO_API_KEY` switches to the paid endpoint.
-- Caches are per process (in memory). Each serverless instance warms its own; a shared Redis would be the next step.
+- Rate limits are only shared when `REDIS_URL` is set (compose sets it; on Vercel it comes from the Redis Marketplace integration, `REDIS_URL` or `KV_URL`). Without it each process counts on its own, so N processes allow N times the rate. If Redis is unreachable or refuses commands, the API keeps answering without limits and tries Redis again every 30 seconds.
+- Response caches (plans, forecasts, place searches) are per process. They're big (a long plan is about 100 kilobytes, a heatmap's forecasts about 0.8 megabytes) and a small hosted Redis would slow them down, so each serverless instance warms its own.
 - On long trips heatmap cells can be ~30 km, so small storm cells look blocky. Checkpoint risk always uses a point forecast at the checkpoint itself.
 - The HOS model covers one trip from a fresh start, not the weekly cycle or split sleeper berth.

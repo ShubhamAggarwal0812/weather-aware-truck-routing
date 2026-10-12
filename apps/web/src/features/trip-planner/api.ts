@@ -2,6 +2,15 @@ import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { api } from "@/lib/api/client";
 
+export function useAppConfig() {
+  return useQuery({
+    queryKey: ["config"],
+    queryFn: ({ signal }) => api.config(signal),
+    staleTime: Infinity,
+    retry: 1,
+  });
+}
+
 export function usePlanTrip() {
   return useMutation({ mutationKey: ["plan"], mutationFn: api.planTrip });
 }

@@ -69,7 +69,7 @@ class Route:
         scale = length_m / cum[-1] if cum[-1] > 0 else 1.0
         cum = [d * scale for d in cum]
         last = len(points) - 1
-        known = dict(t for t in timed if 0 <= t[0] <= last)
+        known = {index: seconds for index, seconds in timed if 0 <= index <= last}
         known.setdefault(0, 0.0)
         known[last] = duration_s
         xs = [cum[i] for i in sorted(known)]

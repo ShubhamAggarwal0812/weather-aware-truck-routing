@@ -1,6 +1,50 @@
-import type { Checkpoint, Plan, RiskKey, RoutePlan } from "@/lib/api/types";
+import type { Checkpoint, Plan, RiskKey, RiskRules, RoutePlan } from "@/lib/api/types";
 
 const NO_MILES = { low: 0, moderate: 0, high: 0, severe: 0, no_travel: 0 };
+
+export const RULES: RiskRules = {
+  levels: [
+    { key: "low", label: "Low", score: 0 },
+    { key: "moderate", label: "Moderate", score: 1 },
+    { key: "high", label: "High", score: 2 },
+    { key: "severe", label: "Severe", score: 3 },
+    { key: "no_travel", label: "No Travel", score: 4 },
+  ],
+  wind_mph: [
+    { level: "moderate", threshold: 25, inclusive: true },
+    { level: "high", threshold: 35, inclusive: true },
+    { level: "severe", threshold: 45, inclusive: true },
+    { level: "no_travel", threshold: 55, inclusive: true },
+  ],
+  rain_in_hr: [
+    { level: "moderate", threshold: 0.1, inclusive: true },
+    { level: "high", threshold: 0.25, inclusive: true },
+    { level: "severe", threshold: 0.5, inclusive: true },
+    { level: "no_travel", threshold: 1.0, inclusive: false },
+  ],
+  snow_in_hr: [
+    { level: "moderate", threshold: 0.5, inclusive: true },
+    { level: "high", threshold: 1.0, inclusive: true },
+    { level: "severe", threshold: 2.0, inclusive: true },
+    { level: "no_travel", threshold: 3.0, inclusive: false },
+  ],
+  load_rules: [
+    {
+      min_wind_mph: 45,
+      max_wind_mph: 55,
+      min_load_lb: 30_000,
+      level: "no_travel",
+      description: "45-54 mph wind with a load over 30,000 lb",
+    },
+    {
+      min_wind_mph: 35,
+      max_wind_mph: 45,
+      min_load_lb: 40_000,
+      level: "severe",
+      description: "35-44 mph wind with a load over 40,000 lb",
+    },
+  ],
+};
 
 export function checkpoint(index: number, level: RiskKey = "low"): Checkpoint {
   return {
@@ -72,7 +116,7 @@ export function plan(overrides: Partial<Plan> = {}): Plan {
       reasons: ["Fewer Severe miles than Route A (0 vs 36 mi)."],
       comparisons: [{ route_id: "A", criterion: "severe_miles", recommended_value: 0, other_value: 36 }],
     },
-    rules: { levels: [], wind_mph: [], rain_in_hr: [], snow_in_hr: [], load_rules: [] },
+    rules: RULES,
     ...overrides,
   };
 }

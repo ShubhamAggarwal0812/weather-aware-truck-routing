@@ -1,7 +1,7 @@
 import type { RiskKey } from "@/lib/api/types";
 import { RISK_COLOR, RISK_LABEL, RISK_TEXT_ON } from "@/lib/risk";
 
-export function RiskChip({ level, size = "sm" }: { level: RiskKey; size?: "xs" | "sm" }) {
+export function RiskChip({ level, size = "sm" }: Readonly<{ level: RiskKey; size?: "xs" | "sm" }>) {
   return (
     <span
       className={`inline-flex items-center rounded-full font-semibold whitespace-nowrap ${

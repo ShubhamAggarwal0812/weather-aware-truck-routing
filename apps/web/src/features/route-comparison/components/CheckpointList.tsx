@@ -12,13 +12,21 @@ interface Props {
 
 type Row = { kind: "checkpoint"; mile: number; index: number } | { kind: "stop"; mile: number; index: number };
 
-export function CheckpointList({ route, intervalMiles }: Props) {
+function byRouteOrder(first: Row, second: Row): number {
+  return (
+    first.mile - second.mile ||
+    Number(first.kind === "stop") - Number(second.kind === "stop") ||
+    first.index - second.index
+  );
+}
+
+export function CheckpointList({ route, intervalMiles }: Readonly<Props>) {
   const focus = useRouteSelection((s) => s.focus);
   const onFocus = useRouteSelection((s) => s.focusCheckpoint);
   const rows: Row[] = [
     ...route.checkpoints.map((cp) => ({ kind: "checkpoint" as const, mile: cp.mile, index: cp.index })),
     ...route.stops.map((s, i) => ({ kind: "stop" as const, mile: s.mile, index: i })),
-  ].sort((a, b) => a.mile - b.mile || (a.kind === "stop" ? 1 : -1));
+  ].sort(byRouteOrder);
 
   const focused = focus?.routeId === route.id ? focus.index : -1;
   const listRef = useRef<HTMLOListElement>(null);

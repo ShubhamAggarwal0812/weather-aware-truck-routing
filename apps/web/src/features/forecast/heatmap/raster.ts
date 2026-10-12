@@ -3,6 +3,7 @@
  *
  * - Values are interpolated bilinearly between grid cells, and linearly between
  *   forecast hours, so the 0–48 h slider moves continuously instead of jumping.
+ *   Risk levels are not, because blending two levels would show levels that aren't there.
  * - Image rows are spaced in Web Mercator, not latitude, so the picture lines
  *   up with the basemap at any zoom.
  * - Cells outside the corridor are missing; pixels near them fade out instead of
@@ -72,6 +73,7 @@ export interface Sampler {
   cells: Int32Array;
   /** 4 bilinear weights per pixel. */
   weights: Float32Array;
+  nearestCells: Int32Array;
 }
 
 export function buildSampler(layout: GridLayout, maxPixels = 260_000): Sampler {
@@ -87,6 +89,7 @@ export function buildSampler(layout: GridLayout, maxPixels = 260_000): Sampler {
 
   const cells = new Int32Array(width * height * 4).fill(-1);
   const weights = new Float32Array(width * height * 4);
+  const nearestCells = new Int32Array(width * height).fill(-1);
   const { step, rmin, cmin, nrows, ncols, cellAt } = layout;
   const yTop = mercY(north);
   const at = (r: number, c: number) => (r < 0 || c < 0 || r >= nrows || c >= ncols ? -1 : cellAt[r * ncols + c]);
@@ -110,9 +113,15 @@ export function buildSampler(layout: GridLayout, maxPixels = 260_000): Sampler {
       weights[o + 1] = fx * (1 - fy);
       weights[o + 2] = (1 - fx) * fy;
       weights[o + 3] = fx * fy;
+      let nearestCorner = -1;
+      for (let corner = 0; corner < 4; corner++) {
+        const closer = nearestCorner < 0 || weights[o + corner] > weights[o + nearestCorner];
+        if (cells[o + corner] >= 0 && closer) nearestCorner = corner;
+      }
+      nearestCells[py * width + px] = nearestCorner < 0 ? -1 : cells[o + nearestCorner];
     }
   }
-  return { width, height, cells, weights };
+  return { width, height, cells, weights, nearestCells };
 }
 
 /** Cell values at fractional hour ``t``, blending the two neighbouring forecast hours. */
@@ -138,8 +147,9 @@ export function paint(
   ramp: Ramp,
   image: Uint8ClampedArray,
   mask?: Float32Array,
+  categorical = false,
 ): void {
-  const { cells, weights } = sampler;
+  const { cells, weights, nearestCells } = sampler;
   const { lut, min, max } = ramp;
   const scale = 255 / (max - min);
   const n = sampler.width * sampler.height;
@@ -160,12 +170,12 @@ export function paint(
       image[o + 3] = 0;
       continue;
     }
-    const v = sum / wsum;
-    const li = Math.min(255, Math.max(0, Math.round((v - min) * scale))) * 4;
-    image[o] = lut[li];
-    image[o + 1] = lut[li + 1];
-    image[o + 2] = lut[li + 2];
-    image[o + 3] = lut[li + 3] * edge;
+    const value = categorical ? values[nearestCells[p]] : sum / wsum;
+    const lookupIndex = Math.min(255, Math.max(0, Math.round((value - min) * scale))) * 4;
+    image[o] = lut[lookupIndex];
+    image[o + 1] = lut[lookupIndex + 1];
+    image[o + 2] = lut[lookupIndex + 2];
+    image[o + 3] = lut[lookupIndex + 3] * edge;
   }
 }
 

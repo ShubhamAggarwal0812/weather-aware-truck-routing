@@ -1,9 +1,30 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TripForm, validateTrip } from "@/features/trip-planner/components/TripForm";
 import { parseCoordinates } from "@/features/trip-planner/components/PlaceInput";
+import { RULES } from "../../fixtures/plan";
+
+const json = (status: number, body: unknown) =>
+  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+let configResponse: () => Response;
+let configRequests: number;
+
+beforeEach(() => {
+  configResponse = () => json(200, { routing_provider: "osrm", truck_aware: false, rules: RULES });
+  configRequests = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (request: Request) => {
+      if (new URL(request.url).pathname !== "/api/v1/config") return json(200, { results: [] });
+      configRequests++;
+      return configResponse();
+    }),
+  );
+});
+afterEach(() => vi.unstubAllGlobals());
 
 function renderForm(onSubmit = vi.fn()) {
   render(
@@ -43,6 +64,41 @@ describe("TripForm", () => {
     await userEvent.click(screen.getByRole("button", { name: "Swap origin and destination" }));
     expect(screen.getByLabelText("Origin")).toHaveValue("Chicago, IL");
     expect(screen.getByLabelText("Destination")).toHaveValue("Denver, CO");
+  });
+
+  it("should empty a box when a swap moves an unpicked side into it", async () => {
+    renderForm();
+    await userEvent.click(screen.getByRole("button", { name: "Denver → Chicago" }));
+    await userEvent.type(screen.getByLabelText("Destination"), "x");
+    expect(screen.getByLabelText("Destination")).toHaveValue("Chicago, ILx");
+    await userEvent.click(screen.getByRole("button", { name: "Swap origin and destination" }));
+    expect(screen.getByLabelText("Origin")).toHaveValue("");
+    expect(screen.getByLabelText("Destination")).toHaveValue("Denver, CO");
+  });
+
+  it("should leave both boxes empty when swapping two empty sides", async () => {
+    renderForm();
+    await userEvent.click(screen.getByRole("button", { name: "Swap origin and destination" }));
+    expect(screen.getByLabelText("Origin")).toHaveValue("");
+    expect(screen.getByLabelText("Destination")).toHaveValue("");
+  });
+
+  it("should write the load-rule hint from the server's rules", async () => {
+    renderForm();
+    expect(
+      await screen.findByText(/45\u2060\u2013\u206054 mph wind with a load over 30,000 lb is No Travel\./),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/35\u2060\u2013\u206044 mph wind with a load over 40,000 lb is Severe\./),
+    ).toBeInTheDocument();
+  });
+
+  it("should keep only the cargo note when the rules can't be loaded", async () => {
+    configResponse = () => json(503, { error: "The service is unavailable." });
+    renderForm();
+    await waitFor(() => expect(configRequests).toBe(2), { timeout: 4000 });
+    expect(screen.getByText("Cargo only.")).toBeInTheDocument();
+    expect(screen.queryByText(/is No Travel/)).not.toBeInTheDocument();
   });
 });
 

@@ -1,24 +1,21 @@
-import type { HeatVariable } from "@/lib/api/types";
-import { RISK_LABEL, RISK_ORDER } from "@/lib/risk";
-import { HEAT_UNIT, RAMPS } from "../heatmap/colors";
+import type { HeatVariable, RiskRules } from "@/lib/api/types";
+import { HEAT_UNIT, levelStops, rampsFor } from "../heatmap/colors";
 
-const TICKS: Record<Exclude<HeatVariable, "risk">, number[]> = {
-  wind_mph: [25, 35, 45, 55],
-  rain_in_hr: [0.1, 0.25, 0.5, 1.0],
-  snow_in_hr: [0.5, 1, 2, 3],
-};
+const swatch = (color: string, alpha: number) =>
+  `${color}${Math.round(Math.max(alpha, 0.15) * 255)
+    .toString(16)
+    .padStart(2, "0")}`;
 
-export function HeatLegend({ variable }: { variable: HeatVariable }) {
-  const ramp = RAMPS[variable];
-  const css = ramp.stops
-    .map((s) => {
-      const pct = ((s.value - ramp.min) / (ramp.max - ramp.min)) * 100;
-      return `${s.color}${Math.round(Math.max(s.alpha, 0.15) * 255)
-        .toString(16)
-        .padStart(2, "0")} ${pct.toFixed(1)}%`;
-    })
-    .join(", ");
-  const at = (v: number) => `${((v - ramp.min) / (ramp.max - ramp.min)) * 100}%`;
+export function HeatLegend({ variable, rules }: Readonly<{ variable: HeatVariable; rules: RiskRules }>) {
+  const ramp = rampsFor(rules)[variable];
+  const positionOf = (value: number) => `${((value - ramp.min) / (ramp.max - ramp.min)) * 100}%`;
+  const blockWidth = 100 / rules.levels.length;
+  const css =
+    variable === "risk"
+      ? levelStops(rules)
+          .map((stop, index) => `${swatch(stop.color, stop.alpha)} ${index * blockWidth}% ${(index + 1) * blockWidth}%`)
+          .join(", ")
+      : ramp.stops.map((stop) => `${swatch(stop.color, stop.alpha)} ${positionOf(stop.value)}`).join(", ");
 
   return (
     <div className="w-full">
@@ -28,18 +25,22 @@ export function HeatLegend({ variable }: { variable: HeatVariable }) {
       />
       <div className="relative mt-0.5 h-3.5 text-[10px] text-slate-500">
         {variable === "risk"
-          ? RISK_ORDER.map((k, i) => (
+          ? rules.levels.map((level, index) => (
               <span
-                key={k}
-                className="absolute -translate-x-1/2 whitespace-nowrap first:translate-x-0 last:-translate-x-full"
-                style={{ left: at(i) }}
+                key={level.key}
+                className="absolute -translate-x-1/2 whitespace-nowrap"
+                style={{ left: `${(index + 0.5) * blockWidth}%` }}
               >
-                {RISK_LABEL[k]}
+                {level.label}
               </span>
             ))
-          : TICKS[variable].map((v) => (
-              <span key={v} className="absolute -translate-x-1/2 tabular-nums" style={{ left: at(v) }}>
-                {v}
+          : rules[variable].map((band) => (
+              <span
+                key={band.level}
+                className="absolute -translate-x-1/2 tabular-nums"
+                style={{ left: positionOf(band.threshold) }}
+              >
+                {band.threshold}
               </span>
             ))}
         {variable !== "risk" && <span className="absolute right-0 text-slate-400">{HEAT_UNIT[variable]}</span>}

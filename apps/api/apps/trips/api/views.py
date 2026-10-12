@@ -32,7 +32,7 @@ ERRORS = {400: ErrorSerializer, 422: ErrorSerializer, 502: ErrorSerializer, 503:
 
 def _cache_key(prefix: str, payload: dict) -> str:
     raw = json.dumps(payload, sort_keys=True, default=str)
-    return f"{prefix}:{hashlib.sha1(raw.encode()).hexdigest()}"
+    return f"{prefix}:{hashlib.sha256(raw.encode()).hexdigest()}"
 
 
 class ConfigView(APIView):

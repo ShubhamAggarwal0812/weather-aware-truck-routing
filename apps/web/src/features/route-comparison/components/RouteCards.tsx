@@ -4,7 +4,7 @@ import type { Plan, RoutePlan } from "@/lib/api/types";
 import { formatDayTime, formatDuration, formatMiles } from "@/lib/format";
 import { useRouteSelection } from "../store";
 
-export function RouteCards({ plan }: { plan: Plan }) {
+export function RouteCards({ plan }: Readonly<{ plan: Plan }>) {
   const selectedId = useRouteSelection((s) => s.selectedId);
   const hoveredId = useRouteSelection((s) => s.hoveredId);
   const select = useRouteSelection((s) => s.select);
@@ -30,19 +30,24 @@ export function RouteCards({ plan }: { plan: Plan }) {
   );
 }
 
+function cardBorder(selected: boolean, hovered: boolean): string {
+  if (selected) return "border-slate-900 ring-1 ring-slate-900";
+  return hovered ? "border-slate-400" : "border-slate-200 hover:border-slate-300";
+}
+
 function RouteCard({
   route,
   selected,
   hovered,
   onSelect,
   onHover,
-}: {
+}: Readonly<{
   route: RoutePlan;
   selected: boolean;
   hovered: boolean;
   onSelect: (id: string) => void;
   onHover: (id: string | null) => void;
-}) {
+}>) {
   const m = route.risk.miles_by_level;
   const breaks = route.travel_time_s - route.drive_time_s;
   return (
@@ -55,13 +60,7 @@ function RouteCard({
       onMouseLeave={() => onHover(null)}
       onFocus={() => onHover(route.id)}
       onBlur={() => onHover(null)}
-      className={`w-full rounded-xl border bg-white p-3 text-left transition ${
-        selected
-          ? "border-slate-900 ring-1 ring-slate-900"
-          : hovered
-            ? "border-slate-400"
-            : "border-slate-200 hover:border-slate-300"
-      }`}
+      className={`w-full rounded-xl border bg-white p-3 text-left transition ${cardBorder(selected, hovered)}`}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">

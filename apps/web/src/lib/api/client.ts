@@ -1,6 +1,6 @@
 import createClient from "openapi-fetch";
 import type { paths } from "../../generated/api";
-import type { Corridor, CorridorRequest, Place, Plan, PlanRequest } from "./types";
+import type { AppConfig, Corridor, CorridorRequest, Place, Plan, PlanRequest } from "./types";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -39,6 +39,7 @@ async function unwrap<T>(call: Promise<Result<T>>): Promise<T> {
 }
 
 export const api = {
+  config: (signal?: AbortSignal): Promise<AppConfig> => unwrap(client.GET("/api/v1/config", { signal })),
   searchPlaces: (q: string, signal?: AbortSignal): Promise<Place[]> =>
     unwrap(client.GET("/api/v1/places", { params: { query: { q } }, signal })).then((r) => r.results),
   planTrip: (body: PlanRequest): Promise<Plan> => unwrap(client.POST("/api/v1/trips/plan", { body })),

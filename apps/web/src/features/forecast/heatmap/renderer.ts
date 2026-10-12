@@ -1,5 +1,5 @@
-import type { Corridor, HeatVariable } from "@/lib/api/types";
-import { RAMPS } from "./colors";
+import type { Corridor, HeatVariable, RiskRules } from "@/lib/api/types";
+import { CATEGORICAL, type Ramp, rampsFor } from "./colors";
 import {
   type GridLayout,
   type Sampler,
@@ -23,15 +23,17 @@ export class HeatmapRenderer {
   private readonly hours: Record<HeatVariable, Float32Array[]>;
   private readonly scratch: Float32Array;
   private readonly mask: Float32Array | undefined;
+  private readonly ramps: Record<HeatVariable, Ramp>;
 
   /** ``lines`` are the routes as [lat, lon] lists; the heatmap is clipped to a band around them. */
-  constructor(corridor: Corridor, lines: number[][][]) {
+  constructor(corridor: Corridor, lines: number[][][], rules: RiskRules) {
     this.layout = buildLayout(corridor);
     this.sampler = buildSampler(this.layout);
     this.hours = hourlyArrays(corridor);
     this.image = new ImageData(this.sampler.width, this.sampler.height);
     this.scratch = new Float32Array(corridor.rows.length);
     this.mask = corridorMask(this.layout, this.sampler, lines);
+    this.ramps = rampsFor(rules);
   }
 
   /** Corners for a MapLibre image source: top-left, top-right, bottom-right, bottom-left. */
@@ -46,8 +48,10 @@ export class HeatmapRenderer {
   }
 
   draw(variable: HeatVariable, hour: number): ImageData {
-    valuesAt(this.hours[variable], hour, this.scratch);
-    paint(this.sampler, this.scratch, RAMPS[variable], this.image.data, this.mask);
+    const categorical = CATEGORICAL.has(variable);
+    // Each hour's risk covers the hour that starts then, as a checkpoint's ETA is scored.
+    valuesAt(this.hours[variable], categorical ? Math.floor(hour) : hour, this.scratch);
+    paint(this.sampler, this.scratch, this.ramps[variable], this.image.data, this.mask, categorical);
     return this.image;
   }
 }

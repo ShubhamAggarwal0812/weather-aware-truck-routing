@@ -13,7 +13,7 @@ import {
 } from "maplibre-gl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { HeatmapRenderer, truckAt, useCorridorForecast, useForecastView } from "@/features/forecast";
+import { CATEGORICAL, HeatmapRenderer, truckAt, useCorridorForecast, useForecastView } from "@/features/forecast";
 import { type CheckpointRef, CheckpointDetails, useRouteSelection } from "@/features/route-comparison";
 import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 import type { Plan } from "@/lib/api/types";
@@ -30,8 +30,8 @@ const STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
  * owns rendering. Selection, hover and the forecast hour only touch filters, marker
  * positions and the heatmap image, never the route sources.
  */
-export default function MapView({ plan }: { plan: Plan | null }) {
-  const container = useRef<HTMLDivElement>(null);
+export default function MapView({ plan }: Readonly<{ plan: Plan | null }>) {
+  const container = useRef<HTMLElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const [ready, setReady] = useState(false);
   const [hovered, setHovered] = useState<CheckpointRef | null>(null);
@@ -88,7 +88,10 @@ export default function MapView({ plan }: { plan: Plan | null }) {
     map.on("mousemove", "checkpoints", (e) => {
       const index = checkpointIndex(e);
       const id = selection().selectedId;
-      if (index !== undefined && id) setHovered({ routeId: id, index });
+      if (index === undefined || !id) return;
+      setHovered((previous) =>
+        previous?.routeId === id && previous.index === index ? previous : { routeId: id, index },
+      );
     });
     map.on("mouseleave", "checkpoints", () => setHovered(null));
     map.on("click", "checkpoints", (e) => {
@@ -117,7 +120,7 @@ export default function MapView({ plan }: { plan: Plan | null }) {
 
     const first = plan.routes[0];
     const origin = first.checkpoints[0];
-    const destination = first.checkpoints[first.checkpoints.length - 1];
+    const destination = first.checkpoints.at(-1) ?? origin;
     const endpoints = [
       new Marker({ element: endpointElement("origin") }).setLngLat([origin.lon, origin.lat]).addTo(map),
       new Marker({ element: endpointElement("destination") }).setLngLat([destination.lon, destination.lat]).addTo(map),
@@ -167,7 +170,7 @@ export default function MapView({ plan }: { plan: Plan | null }) {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
-    const index = focus && focus.routeId === selectedId ? focus.index : -1;
+    const index = focus?.routeId === selectedId ? focus.index : -1;
     map.setFilter("checkpoint-focus", ["==", ["get", "index"], index]);
     const cp = index >= 0 ? plan?.routes.find((r) => r.id === focus!.routeId)?.checkpoints[index] : undefined;
     if (cp && !map.getBounds().contains([cp.lon, cp.lat])) {
@@ -203,7 +206,7 @@ export default function MapView({ plan }: { plan: Plan | null }) {
 
   // Trucks follow the forecast slider.
   useEffect(() => {
-    if (!plan) return;
+    if (!plan || !ready) return;
     for (const route of plan.routes) {
       const truck = trucks.current.get(route.id);
       if (!truck) continue;
@@ -212,7 +215,7 @@ export default function MapView({ plan }: { plan: Plan | null }) {
       truck.el.dataset.status = at.status;
       truck.el.dataset.selected = String(route.id === selectedId);
     }
-  }, [plan, hour, selectedId]);
+  }, [plan, hour, selectedId, ready]);
 
   // Corridor heatmap: (re)build the image source when new forecast data arrives.
   useEffect(() => {
@@ -221,9 +224,13 @@ export default function MapView({ plan }: { plan: Plan | null }) {
     if (map.getLayer(HEAT_LAYER)) map.removeLayer(HEAT_LAYER);
     if (map.getSource(HEAT_SOURCE)) map.removeSource(HEAT_SOURCE);
     heat.current = null;
-    if (!corridor || corridor.rows.length === 0) return;
+    if (!corridor || corridor.rows.length === 0 || !plan) return;
 
-    const renderer = new HeatmapRenderer(corridor, plan?.routes.map((r) => r.corridor_line) ?? []);
+    const renderer = new HeatmapRenderer(
+      corridor,
+      plan.routes.map((route) => route.corridor_line),
+      plan.rules,
+    );
     heat.current = renderer;
     map.addSource(HEAT_SOURCE, { type: "image", coordinates: renderer.coordinates });
     const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
@@ -245,6 +252,8 @@ export default function MapView({ plan }: { plan: Plan | null }) {
     const map = mapRef.current;
     if (!map || !ready || !map.getLayer(HEAT_LAYER)) return;
     map.setLayoutProperty(HEAT_LAYER, "visibility", showHeat ? "visible" : "none");
+    // Linear filtering would blend neighbouring levels into colours of levels that aren't there.
+    map.setPaintProperty(HEAT_LAYER, "raster-resampling", CATEGORICAL.has(heatVariable) ? "nearest" : "linear");
     if (!showHeat || !heat.current) return;
     const renderer = heat.current;
     const frame = requestAnimationFrame(() => {
@@ -260,7 +269,7 @@ export default function MapView({ plan }: { plan: Plan | null }) {
     <>
       {/* MapLibre sets position: relative on its container, so it gets a positioned parent. */}
       <div className="absolute inset-0">
-        <div ref={container} className="h-full w-full" role="region" aria-label="Route map" />
+        <section ref={container} className="h-full w-full" aria-label="Route map" />
       </div>
       {shownCheckpoint &&
         createPortal(

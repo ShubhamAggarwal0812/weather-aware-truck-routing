@@ -26,7 +26,7 @@ class PlaceSearchError(ServiceError):
 def search(query: str) -> list[dict[str, Any]]:
     query = " ".join(query.split())
     provider = "tomtom" if settings.TOMTOM_API_KEY else "photon"
-    key = "geo:" + hashlib.sha1(f"{provider}:{query.lower()}".encode()).hexdigest()
+    key = "geo:" + hashlib.sha256(f"{provider}:{query.lower()}".encode()).hexdigest()
     hit = cache.get(key)
     if hit is not None:
         return hit

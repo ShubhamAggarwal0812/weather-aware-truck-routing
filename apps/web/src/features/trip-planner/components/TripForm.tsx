@@ -2,7 +2,9 @@ import { useState } from "react";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Spinner } from "@/components/ui/Spinner";
 import type { Location, PlanRequest } from "@/lib/api/types";
-import { nextQuarterHour, timeZoneName, toLocalInputValue } from "@/lib/format";
+import { formatRanges, nextQuarterHour, timeZoneName, toLocalInputValue } from "@/lib/format";
+import { RISK_LABEL } from "@/lib/risk";
+import { useAppConfig } from "../api";
 import { EXAMPLES, type ExampleTrip } from "../examples";
 import { PlaceInput } from "./PlaceInput";
 
@@ -45,18 +47,19 @@ interface Props {
   onSubmit: (request: PlanRequest) => void;
 }
 
-export function TripForm({ loading, onSubmit }: Props) {
+export function TripForm({ loading, onSubmit }: Readonly<Props>) {
   const [origin, setOrigin] = useState<Location | null>(null);
   const [destination, setDestination] = useState<Location | null>(null);
   const [departure, setDeparture] = useState(() => toLocalInputValue(nextQuarterHour()));
   const [load, setLoad] = useState("42000");
-  const [interval, setIntervalMiles] = useState<IntervalMiles>(25);
+  const [intervalMiles, setIntervalMiles] = useState<IntervalMiles>(25);
   const [restBreaks, setRestBreaks] = useState(true);
   const [errors, setErrors] = useState<string[]>([]);
+  const loadRules = useAppConfig().data?.rules.load_rules ?? [];
 
   const now = new Date();
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const submit = (event: React.SubmitEvent<HTMLFormElement>) => {
+    event.preventDefault();
     const problems = validateTrip({ origin, destination, departure, load });
     setErrors(problems);
     if (problems.length || !origin || !destination) return;
@@ -65,7 +68,7 @@ export function TripForm({ loading, onSubmit }: Props) {
       destination,
       departure: new Date(departure).toISOString(),
       load_weight_lb: Math.round(Number(load)),
-      interval_miles: interval,
+      interval_miles: intervalMiles,
       rest_breaks: restBreaks,
     });
   };
@@ -153,7 +156,8 @@ export function TripForm({ loading, onSubmit }: Props) {
         </div>
       </div>
       <p className="text-[11px] leading-snug text-slate-500">
-        Cargo only. Over 30,000 lb, 45–54 mph wind is No Travel. Over 40,000 lb, 35–44 mph wind is Severe.
+        Cargo only.
+        {loadRules.map((rule) => ` ${formatRanges(rule.description)} is ${RISK_LABEL[rule.level]}.`).join("")}
       </p>
 
       <div>
@@ -161,7 +165,7 @@ export function TripForm({ loading, onSubmit }: Props) {
         <SegmentedControl
           label="Weather checkpoint every"
           options={INTERVALS}
-          value={interval}
+          value={intervalMiles}
           onChange={setIntervalMiles}
         />
       </div>
@@ -174,7 +178,7 @@ export function TripForm({ loading, onSubmit }: Props) {
           className="mt-0.5 h-4 w-4 accent-slate-900"
         />
         <span>
-          Include HOS breaks in ETAs
+          Include HOS breaks in ETAs{" "}
           <span className="block text-[11px] text-slate-500">30 min after 8 h driving, 10 h rest after 11 h.</span>
         </span>
       </label>

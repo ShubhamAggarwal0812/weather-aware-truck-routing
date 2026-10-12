@@ -21,9 +21,15 @@ const STATUS_TEXT = {
   arrived: "arrived",
 } as const;
 const HOUR_MS = 3_600_000;
+const MARK_TITLE = { arrive: "Arrival", rest: "10-hour rest", break: "30-minute break" } as const;
+
+function tickAlignment(hour: number): string {
+  if (hour === 0) return "";
+  return hour === FORECAST_HOURS ? "-translate-x-full" : "-translate-x-1/2";
+}
 
 /** Forecast slider, playback, heatmap layer picker and legend. */
-export function Timeline({ plan }: { plan: Plan }) {
+export function Timeline({ plan }: Readonly<{ plan: Plan }>) {
   usePlayback();
   const { hour, playing, variable, showHeat, setHour, setPlaying, setVariable, setShowHeat } = useForecastView();
   const selectedId = useRouteSelection((s) => s.selectedId);
@@ -83,7 +89,7 @@ export function Timeline({ plan }: { plan: Plan }) {
               onChange={(e) => setShowHeat(e.target.checked)}
               className="h-3.5 w-3.5 accent-slate-900"
             />
-            Heatmap
+            <span>Heatmap</span>
           </label>
         </div>
       </div>
@@ -108,27 +114,25 @@ export function Timeline({ plan }: { plan: Plan }) {
             <span
               key={h}
               // Edge labels align inwards so they never stick out of the panel.
-              className={`absolute whitespace-nowrap tabular-nums ${
-                h === 0 ? "" : h === FORECAST_HOURS ? "-translate-x-full" : "-translate-x-1/2"
-              }`}
+              className={`absolute whitespace-nowrap tabular-nums ${tickAlignment(h)}`}
               style={{ left: `${(h / FORECAST_HOURS) * 100}%` }}
             >
               {h === 0 ? "0 h" : `+${h} h`}
             </span>
           ))}
-          {marks.map((m, i) => (
+          {marks.map((mark) => (
             <span
-              key={i}
-              title={m.kind === "arrive" ? "Arrival" : m.kind === "rest" ? "10-h rest" : "30-min break"}
-              className={`absolute -top-[17px] h-2 w-0.5 -translate-x-1/2 rounded ${m.kind === "arrive" ? "bg-emerald-600" : "bg-blue-900"}`}
-              style={{ left: `${(m.h / FORECAST_HOURS) * 100}%` }}
+              key={`${mark.kind}-${mark.h}`}
+              title={MARK_TITLE[mark.kind]}
+              className={`absolute -top-[17px] h-2 w-0.5 -translate-x-1/2 rounded ${mark.kind === "arrive" ? "bg-emerald-600" : "bg-blue-900"}`}
+              style={{ left: `${(mark.h / FORECAST_HOURS) * 100}%` }}
             />
           ))}
         </div>
       </div>
 
       <div className="mt-1.5 min-h-[26px]">
-        {corridor.isSuccess && <HeatLegend variable={variable} />}
+        {corridor.isSuccess && <HeatLegend variable={variable} rules={plan.rules} />}
         {corridor.isPending && (
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <Spinner className="h-3 w-3" />

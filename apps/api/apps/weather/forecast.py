@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -42,6 +43,11 @@ _attempts = ThreadPoolExecutor(max_workers=2 * MAX_PARALLEL, thread_name_prefix=
 CACHE_TTL_S = 30 * 60
 FORECAST_DAYS = 16
 HOUR = timedelta(hours=1)
+DAY = timedelta(days=1)
+TIME_FORMAT = "%Y-%m-%dT%H:%M"
+INCOMPLETE_FORECAST = "The weather service returned an incomplete forecast."
+# Models occasionally drop an hour; a longer run of nulls means the forecast stops short.
+MAX_FILLED_GAP_HOURS = 3
 
 
 def floor_hour(t: datetime) -> datetime:
@@ -70,6 +76,10 @@ class HourlySeries:
 
     def __len__(self) -> int:
         return len(self.wind_mph)
+
+    @property
+    def last_hour(self) -> datetime:
+        return self.start + (len(self) - 1) * HOUR
 
     def hour_index(self, t: datetime) -> int:
         return int((floor_hour(t) - self.start) / HOUR)
@@ -121,13 +131,21 @@ class OpenMeteoClient:
     def hourly(self, points: list[LatLon], start: datetime, end: datetime) -> list[HourlySeries]:
         """Forecasts for ``points`` from ``start`` to ``end`` (both whole UTC hours, inclusive)."""
         start, end = floor_hour(start), floor_hour(end)
-        keys = [_cache_key(p, start, end) for p in points]
-        cached = cache.get_many(keys)
+        keys = [_cache_key(point, start) for point in points]
+        cached = {key: series for key, series in cache.get_many(keys).items() if series.last_hour >= end}
         missing = [i for i, k in enumerate(keys) if k not in cached]
         if missing:
+            # Whole days from the start, so trips that only differ in arrival time share the cached series.
+            whole_days_end = start + math.ceil((end - start) / DAY) * DAY
+            fetch_end = max(end, min(whole_days_end, forecast_limit()))
             batches = [missing[i : i + BATCH_SIZE] for i in range(0, len(missing), BATCH_SIZE)]
             with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
-                results = list(pool.map(lambda b: self._hedged([points[i] for i in b], start, end), batches))
+                results = list(
+                    pool.map(
+                        lambda batch: self._hedged([points[index] for index in batch], start, fetch_end),
+                        batches,
+                    )
+                )
             fresh = {keys[i]: series for batch, out in zip(batches, results) for i, series in zip(batch, out)}
             cache.set_many(fresh, CACHE_TTL_S)
             cached.update(fresh)
@@ -136,20 +154,39 @@ class OpenMeteoClient:
 
     def _hedged(self, points: list[LatLon], start: datetime, end: datetime) -> list[HourlySeries]:
         """Fetch a batch; if it's slow, race a second identical request against it."""
-        first = _attempts.submit(self._fetch, points, start, end)
+        running = threading.Event()
+
+        def first_attempt() -> list[HourlySeries]:
+            running.set()
+            return self._fetch(points, start, end)
+
+        first = _attempts.submit(first_attempt)
+        # Waiting for a free worker isn't slowness, and a hedge sent then would only queue behind it.
+        running.wait()
         done, _ = wait([first], timeout=HEDGE_AFTER_S)
         if done:
             return first.result()
         log.info("weather: batch of %d slow after %.1f s, hedging", len(points), HEDGE_AFTER_S)
-        pending: set[Future[list[HourlySeries]]] = {first, _attempts.submit(self._fetch, points, start, end)}
+
+        def hedge() -> list[HourlySeries]:
+            # The worker that finishes the first attempt can pick this up before it's cancelled.
+            if first.done() and first.exception() is None:
+                return first.result()
+            return self._fetch(points, start, end)
+
+        pending: set[Future[list[HourlySeries]]] = {first, _attempts.submit(hedge)}
         error: WeatherError | None = None
-        while pending:
-            done, pending = wait(pending, return_when=FIRST_COMPLETED)
-            for future in done:
-                try:
-                    return future.result()
-                except WeatherError as exc:
-                    error = exc
+        try:
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        return future.result()
+                    except WeatherError as weather_error:
+                        error = weather_error
+        finally:
+            for future in pending:
+                future.cancel()
         assert error is not None
         raise error
 
@@ -162,8 +199,8 @@ class OpenMeteoClient:
             "precipitation_unit": "inch",
             "temperature_unit": "fahrenheit",
             "timezone": "GMT",
-            "start_hour": start.strftime("%Y-%m-%dT%H:%M"),
-            "end_hour": end.strftime("%Y-%m-%dT%H:%M"),
+            "start_hour": start.strftime(TIME_FORMAT),
+            "end_hour": end.strftime(TIME_FORMAT),
         }
         if self.api_key:
             form["apikey"] = self.api_key
@@ -177,35 +214,51 @@ class OpenMeteoClient:
             raise WeatherError("The weather service is unavailable. Try again in a minute.") from exc
         locations = data if isinstance(data, list) else [data]
         if len(locations) != len(points):
-            raise WeatherError("The weather service returned an incomplete forecast.")
-        expected_first = start.strftime("%Y-%m-%dT%H:%M")
-        if any(loc["hourly"]["time"][0] != expected_first for loc in locations):
-            raise WeatherError("The weather service returned an unexpected time window.")
+            raise WeatherError(INCOMPLETE_FORECAST)
+        hours = int((end - start) / HOUR) + 1
+        expected_times = [(start + hour * HOUR).strftime(TIME_FORMAT) for hour in range(hours)]
+        for location in locations:
+            hourly = location.get("hourly") or {}
+            if hourly.get("time") != expected_times:
+                raise WeatherError("The weather service returned an unexpected time window.")
+            if any(len(hourly.get(variable) or ()) != hours for variable in HOURLY_VARIABLES):
+                raise WeatherError(INCOMPLETE_FORECAST)
         return [_parse(loc["hourly"], start) for loc in locations]
 
 
-def _cache_key(p: LatLon, start: datetime, end: datetime) -> str:
-    return f"om:{p[0]:.4f},{p[1]:.4f}:{start:%Y%m%d%H}:{end:%Y%m%d%H}"
+def _cache_key(point: LatLon, start: datetime) -> str:
+    return f"open-meteo:{point[0]:.4f},{point[1]:.4f}:{start:%Y%m%d%H}"
 
 
-def _filled(values: list[float | None], default: float = 0.0) -> tuple[float, ...]:
-    """Replace gaps with the previous value (models occasionally drop an hour)."""
-    out: list[float] = []
-    last = next((v for v in values if v is not None), default)
-    for v in values:
-        last = v if v is not None else last
-        out.append(float(last))
-    return tuple(out)
+def _filled(values: list[float | None], default: float | None = None) -> tuple[float, ...]:
+    if all(value is None for value in values):
+        # A model that doesn't report a precipitation type reports none of it; missing wind or
+        # temperature is unknown weather, which must not be scored as calm.
+        if default is None:
+            raise WeatherError(INCOMPLETE_FORECAST)
+        return (default,) * len(values)
+    filled: list[float] = []
+    previous = next(value for value in values if value is not None)
+    gap_hours = 0
+    for value in values:
+        if value is None:
+            gap_hours += 1
+            if gap_hours > MAX_FILLED_GAP_HOURS:
+                raise WeatherError(INCOMPLETE_FORECAST)
+        else:
+            previous, gap_hours = value, 0
+        filled.append(float(previous))
+    return tuple(filled)
 
 
 def _parse(hourly: dict, start: datetime) -> HourlySeries:
-    rain = _filled(hourly["rain"])
-    showers = _filled(hourly["showers"])
+    rain = _filled(hourly["rain"], default=0.0)
+    showers = _filled(hourly["showers"], default=0.0)
     return HourlySeries(
         start=start,
         wind_mph=_filled(hourly["wind_speed_10m"]),
         gust_mph=_filled(hourly["wind_gusts_10m"]),
         rain_in=tuple(r + s for r, s in zip(rain, showers)),
-        snow_in=_filled(hourly["snowfall"]),
+        snow_in=_filled(hourly["snowfall"], default=0.0),
         temp_f=_filled(hourly["temperature_2m"]),
     )

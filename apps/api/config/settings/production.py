@@ -1,6 +1,6 @@
 """Production (Vercel functions or the Docker image). Behind a TLS-terminating proxy."""
 
-from .base import *  # noqa: F403
+from .base import *  # noqa: F403  # NOSONAR
 from .base import env_bool, env_list
 
 DEBUG = False

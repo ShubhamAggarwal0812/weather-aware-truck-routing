@@ -14,11 +14,11 @@ export function CheckpointDetails({
   routeId,
   checkpoint: cp,
   compact = false,
-}: {
+}: Readonly<{
   routeId: string;
   checkpoint: Checkpoint;
   compact?: boolean;
-}) {
+}>) {
   const loadRule = cp.factors.find((f) => f.load_rule)?.load_rule;
   return (
     <div className={compact ? "text-xs" : "text-sm"}>
