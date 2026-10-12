@@ -1,5 +1,7 @@
 # Weather-Aware Truck Routing
 
+[![CI](https://github.com/ShubhamAggarwal0812/weather-aware-truck-routing/actions/workflows/ci.yml/badge.svg)](https://github.com/ShubhamAggarwal0812/weather-aware-truck-routing/actions/workflows/ci.yml)
+
 A React + Django app that helps a truck driver pick the safest route. It compares three truck routes, checks the forecast at every checkpoint for the hour the truck will actually be there, applies the load-weight rules, and recommends a route. A 48-hour heatmap shows how the weather moves along the corridor.
 
 **Live app:** https://weather-truck-routing.vercel.app · **API docs:** https://truck-routing-api.vercel.app/api/v1/docs · **Walkthrough:** _Loom link_
