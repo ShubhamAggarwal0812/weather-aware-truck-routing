@@ -164,6 +164,9 @@ OPEN_METEO_BASE_URL = env(
     "OPEN_METEO_BASE_URL",
     "https://customer-api.open-meteo.com" if OPEN_METEO_API_KEY else "https://api.open-meteo.com",
 )
+# Under a third of the free daily quota, so no single client can use it all up; a plan with its heatmap needs a
+# few hundred uncached locations.
+WEATHER_BUDGET = env("WEATHER_BUDGET", "3000/day")
 
 LOGGING = {
     "version": 1,

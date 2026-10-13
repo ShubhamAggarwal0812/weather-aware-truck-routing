@@ -1,6 +1,6 @@
 from rest_framework.test import APIClient, APIRequestFactory
 
-from common.api.throttling import SharedScopedRateThrottle
+from common.api.throttling import SharedScopedRateThrottle, client_address
 
 
 def test_health():
@@ -19,3 +19,8 @@ def test_should_key_rate_limits_on_the_address_the_proxy_saw_not_on_what_the_cli
     honest = APIRequestFactory().post("/", HTTP_X_FORWARDED_FOR="203.0.113.9", REMOTE_ADDR="172.18.0.3")
     throttle = SharedScopedRateThrottle()
     assert throttle.get_ident(spoofed) == throttle.get_ident(honest) == "203.0.113.9"
+
+
+def test_should_charge_weather_to_the_same_address_the_throttles_key_on():
+    spoofed = APIRequestFactory().post("/", HTTP_X_FORWARDED_FOR="6.6.6.6, 203.0.113.9", REMOTE_ADDR="172.18.0.3")
+    assert client_address(spoofed) == SharedScopedRateThrottle().get_ident(spoofed) == "203.0.113.9"

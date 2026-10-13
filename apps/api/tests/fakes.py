@@ -7,8 +7,10 @@ from datetime import datetime
 from itertools import pairwise
 
 from apps.routing.providers import Route, RouteRequest
+from apps.trips.domain.recommend import RouteScore
+from apps.trips.domain.risk import RiskLevel
 from apps.weather.forecast import HOUR, HourlySeries, floor_hour
-from common.geo import LatLon, cumulative_distances
+from common.geo import METERS_PER_MILE, LatLon, cumulative_distances
 
 MPH_TO_MPS = 0.44704
 
@@ -56,30 +58,42 @@ class FakeProvider:
         return self._via(via) if self._via else None
 
 
-# conditions(lat, lon, time) -> (wind_mph, rain_in_hr, snow_in_hr)
-ConditionsFn = Callable[[float, float, datetime], tuple[float, float, float]]
+WindRainSnow = tuple[float, float, float]
+ConditionsAt = Callable[[float, float, datetime], WindRainSnow]
 
 
 class FakeWeather:
     """Builds hourly series from a function of place and time. Precip is the total for
     the hour ending at each timestamp, like Open-Meteo, so it's sampled mid-hour."""
 
-    def __init__(self, fn: ConditionsFn | None = None):
-        self.fn = fn or (lambda lat, lon, t: (5.0, 0.0, 0.0))
+    def __init__(self, conditions_at: ConditionsAt | None = None, *, gusts_and_temperature_known: bool = True):
+        self.conditions_at = conditions_at or (lambda latitude, longitude, time: (5.0, 0.0, 0.0))
+        self.gusts_and_temperature_known = gusts_and_temperature_known
         self.calls: list[tuple[int, datetime, datetime]] = []
 
     def hourly(self, points: list[LatLon], start: datetime, end: datetime) -> list[HourlySeries]:
-        start, end = floor_hour(start), floor_hour(end)
         self.calls.append((len(points), start, end))
-        hours = int((end - start) / HOUR) + 1
+        # Like the real client, so precipitation at ``end`` can read the following hour's total.
+        start = floor_hour(start)
+        hours = int((floor_hour(end) - start) / HOUR) + 2
         out = []
-        for lat, lon in points:
-            times = [start + h * HOUR for h in range(hours)]
-            wind = tuple(self.fn(lat, lon, t)[0] for t in times)
-            rain = tuple(self.fn(lat, lon, t - HOUR / 2)[1] for t in times)
-            snow = tuple(self.fn(lat, lon, t - HOUR / 2)[2] for t in times)
-            out.append(HourlySeries(start, wind, wind, rain, snow, tuple(50.0 for _ in times)))
+        for latitude, longitude in points:
+            times = [start + hour * HOUR for hour in range(hours)]
+            wind = tuple(self.conditions_at(latitude, longitude, time)[0] for time in times)
+            rain = tuple(self.conditions_at(latitude, longitude, time - HOUR / 2)[1] for time in times)
+            snow = tuple(self.conditions_at(latitude, longitude, time - HOUR / 2)[2] for time in times)
+            gusts = wind if self.gusts_and_temperature_known else (None,) * hours
+            temperature = (50.0,) * hours if self.gusts_and_temperature_known else (None,) * hours
+            out.append(HourlySeries(start, wind, gusts, rain, snow, temperature))
         return out
+
+
+def route_score(route_id: str, travel_hours: float = 10, **miles_by_level: float) -> RouteScore:
+    levels = {level.key: level for level in RiskLevel}
+    meters = {level: 0.0 for level in RiskLevel}
+    for key, miles in miles_by_level.items():
+        meters[levels[key]] = miles * METERS_PER_MILE
+    return RouteScore(route_id, meters, travel_hours * HOUR.total_seconds())
 
 
 def storm(lat, lon, t):

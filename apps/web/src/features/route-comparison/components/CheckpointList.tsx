@@ -61,31 +61,35 @@ export function CheckpointList({ route, intervalMiles }: Readonly<Props>) {
               </li>
             );
           }
-          const cp = route.checkpoints[row.index];
-          const c = cp.conditions;
-          const active = cp.index === focused;
+          const checkpoint = route.checkpoints[row.index];
+          const conditions = checkpoint.conditions;
+          const active = checkpoint.index === focused;
           return (
-            <li key={`cp-${cp.index}`} data-checkpoint={cp.index}>
+            <li key={`checkpoint-${checkpoint.index}`} data-checkpoint={checkpoint.index}>
               <button
                 type="button"
-                onClick={() => onFocus(active ? null : { routeId: route.id, index: cp.index })}
+                onClick={() => onFocus(active ? null : { routeId: route.id, index: checkpoint.index })}
                 className={`grid w-full grid-cols-[3rem_1fr_auto] items-center gap-2 px-3 py-1.5 text-left transition ${
                   active ? "bg-slate-100" : "hover:bg-slate-50"
                 }`}
                 aria-pressed={active}
               >
                 <span className="flex items-center gap-1.5 tabular-nums text-slate-700">
-                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: RISK_COLOR[cp.level] }} />
-                  {Math.round(cp.mile)}
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ background: RISK_COLOR[checkpoint.level] }}
+                  />
+                  {Math.round(checkpoint.mile)}
                 </span>
                 <span className="min-w-0">
-                  <span className="block font-medium text-slate-800">{formatDayTime(cp.eta)}</span>
+                  <span className="block font-medium text-slate-800">{formatDayTime(checkpoint.eta)}</span>
                   <span className="block truncate tabular-nums text-slate-500">
-                    {c.wind_mph.toFixed(0)} mph · rain {formatRate(c.rain_in_hr)} · snow {formatRate(c.snow_in_hr)} ·{" "}
-                    {c.temp_f}°F
+                    {conditions.wind_mph.toFixed(0)} mph · rain {formatRate(conditions.rain_in_hr)} · snow{" "}
+                    {formatRate(conditions.snow_in_hr)}
+                    {conditions.temp_f !== null && ` · ${conditions.temp_f}°F`}
                   </span>
                 </span>
-                <RiskChip level={cp.level} size="xs" />
+                <RiskChip level={checkpoint.level} size="xs" />
               </button>
             </li>
           );

@@ -11,7 +11,6 @@ export type PlanRequest = Schemas["PlanRequest"];
 export type Plan = Schemas["Plan"];
 export type RoutePlan = Schemas["RoutePlan"];
 export type Checkpoint = Schemas["Checkpoint"];
-export type Stop = Schemas["Stop"];
 export type RiskRules = Schemas["RiskRules"];
 export type CorridorRequest = Schemas["CorridorRequest"];
 export type Corridor = Schemas["Corridor"];

@@ -47,6 +47,20 @@ interface Props {
   onSubmit: (request: PlanRequest) => void;
 }
 
+// The server owns the load rules, so there is no copy here to fall back on while they're missing.
+function LoadRulesHint() {
+  const configuration = useAppConfig();
+  if (configuration.isPending) return <>Loading the load-weight rules…</>;
+  if (configuration.isError) return <>Heavier loads raise the wind risk; the exact rules couldn&rsquo;t be loaded.</>;
+  return (
+    <>
+      {configuration.data.rules.load_rules
+        .map((rule) => `${formatRanges(rule.description)} is ${RISK_LABEL[rule.level]}.`)
+        .join(" ")}
+    </>
+  );
+}
+
 export function TripForm({ loading, onSubmit }: Readonly<Props>) {
   const [origin, setOrigin] = useState<Location | null>(null);
   const [destination, setDestination] = useState<Location | null>(null);
@@ -55,7 +69,6 @@ export function TripForm({ loading, onSubmit }: Readonly<Props>) {
   const [intervalMiles, setIntervalMiles] = useState<IntervalMiles>(25);
   const [restBreaks, setRestBreaks] = useState(true);
   const [errors, setErrors] = useState<string[]>([]);
-  const loadRules = useAppConfig().data?.rules.load_rules ?? [];
 
   const now = new Date();
   const submit = (event: React.SubmitEvent<HTMLFormElement>) => {
@@ -156,8 +169,7 @@ export function TripForm({ loading, onSubmit }: Readonly<Props>) {
         </div>
       </div>
       <p className="text-[11px] leading-snug text-slate-500">
-        Cargo only.
-        {loadRules.map((rule) => ` ${formatRanges(rule.description)} is ${RISK_LABEL[rule.level]}.`).join("")}
+        Cargo only. <LoadRulesHint />
       </p>
 
       <div>

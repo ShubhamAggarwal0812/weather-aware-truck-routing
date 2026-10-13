@@ -13,6 +13,14 @@ export class ApiError extends Error {
   }
 }
 
+export function isTransient(error: unknown): boolean {
+  return !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
+}
+
+export function canRetryLater(error: unknown): boolean {
+  return isTransient(error) || (error instanceof ApiError && error.status === 429);
+}
+
 // Same origin in every environment: Vite proxies /api in development, Vercel/nginx in production.
 const client = createClient<paths>({
   baseUrl: import.meta.env.VITE_API_BASE ?? window.location.origin,

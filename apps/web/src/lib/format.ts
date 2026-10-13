@@ -1,4 +1,3 @@
-const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const dayTimeFmt = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
 const dateTimeFmt = new Intl.DateTimeFormat(undefined, {
   weekday: "short",
@@ -17,7 +16,6 @@ export function formatDuration(seconds: number): string {
   return m === 0 ? `${h} h` : `${h} h ${m} min`;
 }
 
-export const formatTime = (iso: string) => timeFmt.format(new Date(iso));
 export const formatDayTime = (iso: string) => dayTimeFmt.format(new Date(iso));
 export const formatDateTime = (iso: string) => dateTimeFmt.format(new Date(iso));
 

@@ -35,6 +35,12 @@ def test_plan_response_matches_schema(monkeypatch, departure):
     assert_matches(PlanSerializer, data)
 
 
+def test_should_match_the_schema_when_the_forecast_leaves_out_gusts_and_temperature(monkeypatch, departure):
+    install(monkeypatch, FakeProvider([straight_route(ORIGIN, DEST)]), FakeWeather(gusts_and_temperature_known=False))
+    data = APIClient().post("/api/v1/trips/plan", body(departure), format="json").json()
+    assert_matches(PlanSerializer, data)
+
+
 def test_corridor_response_matches_schema(monkeypatch, departure):
     install(monkeypatch, FakeProvider([]), FakeWeather(storm))
     payload = {"lines": [[[40.0, -105.0], [40.0, -95.0]]], "departure": departure.isoformat(), "load_weight_lb": 0}

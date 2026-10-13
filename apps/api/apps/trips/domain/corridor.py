@@ -9,11 +9,18 @@ until the corridor fits ``max_cells``, which bounds the cost of a long trip.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from common.exceptions import ServiceError
-from common.geo import METERS_PER_MILE, LatLon, cumulative_distances, haversine_m, point_at_distance
+from common.geo import (
+    METERS_PER_MILE,
+    LatLon,
+    cumulative_distances,
+    haversine_m,
+    point_at_distance,
+    sample_distances,
+)
 
 STEPS_DEG = (0.1, 0.125, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 1.0)
 DEFAULT_BUFFER_M = 30 * METERS_PER_MILE
@@ -47,30 +54,22 @@ class CorridorGrid:
 
 
 def _cells_for(
-    routes: Sequence[Sequence[LatLon]], step: float, buffer_m: float, limit: int
+    routes: Sequence[Sequence[LatLon]], step: float, buffer_meters: float, limit: int
 ) -> set[tuple[int, int]] | None:
     cells: set[tuple[int, int]] = set()
-    sample_m = step * METERS_PER_DEG_LAT / 2
+    sample_meters = step * METERS_PER_DEG_LAT / 2
     # A cell is kept when its centre is within buffer + half a diagonal of the route,
     # so the corridor edge is a full ring of cells rather than a ragged one.
-    reach_m = buffer_m + step * METERS_PER_DEG_LAT * 0.71
+    reach_meters = buffer_meters + step * METERS_PER_DEG_LAT * 0.71
     for points in routes:
         if len(points) < 2:
             continue
-        cum = cumulative_distances(points)
-        for distance in _sample_distances(cum[-1], sample_m):
-            _add_cells_near(cells, point_at_distance(points, cum, distance), step, reach_m)
+        cumulative_meters = cumulative_distances(points)
+        for distance in sample_distances(0.0, cumulative_meters[-1], sample_meters):
+            _add_cells_near(cells, point_at_distance(points, cumulative_meters, distance), step, reach_meters)
             if len(cells) > limit:
                 return None
     return cells
-
-
-def _sample_distances(length_meters: float, step_meters: float) -> Iterator[float]:
-    distance = 0.0
-    while distance < length_meters:
-        yield distance
-        distance += step_meters
-    yield length_meters
 
 
 def _add_cells_near(cells: set[tuple[int, int]], point: LatLon, step: float, reach_meters: float) -> None:

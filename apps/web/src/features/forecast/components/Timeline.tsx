@@ -1,6 +1,7 @@
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Spinner } from "@/components/ui/Spinner";
 import { useRouteSelection } from "@/features/route-comparison";
+import { canRetryLater } from "@/lib/api/client";
 import type { HeatVariable, Plan } from "@/lib/api/types";
 import { formatDayTime } from "@/lib/format";
 import { useCorridorForecast } from "../api";
@@ -142,13 +143,15 @@ export function Timeline({ plan }: Readonly<{ plan: Plan }>) {
         {corridor.isError && (
           <div className="flex items-center gap-2 text-xs text-red-600" role="alert">
             Heatmap unavailable: {corridor.error.message}
-            <button
-              type="button"
-              onClick={() => corridor.refetch()}
-              className="rounded border border-red-200 px-1.5 py-0.5 font-medium hover:bg-red-50"
-            >
-              Retry
-            </button>
+            {canRetryLater(corridor.error) && (
+              <button
+                type="button"
+                onClick={() => corridor.refetch()}
+                className="rounded border border-red-200 px-1.5 py-0.5 font-medium hover:bg-red-50"
+              >
+                Retry
+              </button>
+            )}
           </div>
         )}
       </div>

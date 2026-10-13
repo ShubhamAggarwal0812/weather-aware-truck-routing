@@ -11,9 +11,11 @@ services:
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,api
       # Both gunicorn workers must share the rate-limit counters, or each allows the full rate.
       REDIS_URL: redis://redis:6379/0
+    # Never held back by Redis: without it the API still answers, only without rate limits.
     depends_on:
       redis:
-        condition: service_healthy
+        condition: service_started
+        required: false
 
   redis:
     image: redis:7.4-alpine

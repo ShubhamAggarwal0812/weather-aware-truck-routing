@@ -114,7 +114,7 @@ export function plan(overrides: Partial<Plan> = {}): Plan {
       safe: true,
       headline: "Route B is the safest option.",
       reasons: ["Fewer Severe miles than Route A (0 vs 36 mi)."],
-      comparisons: [{ route_id: "A", criterion: "severe_miles", recommended_value: 0, other_value: 36 }],
+      comparisons: [{ route_id: "A", criterion: "severe_miles", value: 36, leader_id: "B", leader_value: 0 }],
     },
     rules: RULES,
     ...overrides,

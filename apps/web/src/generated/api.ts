@@ -116,10 +116,15 @@ export interface components {
         Comparison: {
             route_id: string;
             criterion: components["schemas"]["CriterionEnum"];
+            /**
+             * Format: double
+             * @description This route's value on the criterion that ruled it out.
+             */
+            value: number;
+            /** @description The route leading on that criterion when this one was ruled out; for a tie, the recommended route. */
+            leader_id: string;
             /** Format: double */
-            recommended_value: number;
-            /** Format: double */
-            other_value: number;
+            leader_value: number;
         };
         /**
          * @description * `wind` - wind
@@ -131,13 +136,17 @@ export interface components {
         Conditions: {
             /** Format: double */
             wind_mph: number;
-            /** Format: double */
-            gust_mph: number;
+            /**
+             * Format: double
+             * @description Shown only, not scored; null if not forecast.
+             */
+            gust_mph: number | null;
             /** Format: double */
             rain_in_hr: number;
             /** Format: double */
             snow_in_hr: number;
-            temp_f: number;
+            /** @description Shown only, not scored; null if not forecast. */
+            temp_f: number | null;
         };
         Config: {
             routing_provider: string;
@@ -483,6 +492,14 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             502: {
                 headers: {
                     [name: string]: unknown;
@@ -531,6 +548,14 @@ export interface operations {
                 };
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -93,11 +93,20 @@ describe("TripForm", () => {
     ).toBeInTheDocument();
   });
 
-  it("should keep only the cargo note when the rules can't be loaded", async () => {
+  it("should say the rules are loading until they arrive", async () => {
+    renderForm();
+    expect(screen.getByText(/Cargo only\. Loading the load-weight rules/)).toBeInTheDocument();
+    expect(await screen.findByText(/is No Travel\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Loading the load-weight rules/)).not.toBeInTheDocument();
+  });
+
+  it("should say the rules couldn't be loaded instead of leaving them out", async () => {
     configResponse = () => json(503, { error: "The service is unavailable." });
     renderForm();
     await waitFor(() => expect(configRequests).toBe(2), { timeout: 4000 });
-    expect(screen.getByText("Cargo only.")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Heavier loads raise the wind risk; the exact rules couldn.t be loaded\./),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/is No Travel/)).not.toBeInTheDocument();
   });
 });
