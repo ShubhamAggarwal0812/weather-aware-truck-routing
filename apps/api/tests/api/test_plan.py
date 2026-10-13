@@ -1,9 +1,13 @@
 from datetime import datetime, timedelta
 
 import pytest
+import respx
+from django.core.cache import caches
 from rest_framework.test import APIClient
 
 from apps.routing.exceptions import RoutingError
+from apps.trips.api import views
+from apps.weather.budget import WeatherBudget
 from tests.fakes import FakeProvider, FakeWeather, storm, straight_route
 
 from .conftest import install
@@ -174,3 +178,27 @@ def test_routing_errors_reach_the_user(client, monkeypatch, departure):
     res = client.post(PLAN_URL, body(departure), format="json")
     assert res.status_code == 422
     assert res.json() == {"error": "No truck route was found between these places."}
+
+
+@respx.mock
+def test_should_refuse_a_plan_past_the_client_weather_allowance_without_fetching(
+    client, monkeypatch, settings, departure, three_roads
+):
+    settings.WEATHER_BUDGET = "1000/day"
+    caches["limits"].clear()
+    WeatherBudget("127.0.0.1").spend(999)
+    monkeypatch.setattr(views, "get_routing_provider", lambda: FakeProvider(three_roads))
+    open_meteo = respx.post("https://api.open-meteo.com/v1/forecast")
+    response = client.post(PLAN_URL, body(departure), format="json")
+    assert response.status_code == 429
+    assert "weather data" in response.json()["error"]
+    assert open_meteo.call_count == 0
+
+
+def test_should_show_gusts_and_temperature_the_forecast_left_out_as_null(client, monkeypatch, departure, three_roads):
+    install(monkeypatch, FakeProvider(three_roads), FakeWeather(storm, gusts_and_temperature_known=False))
+    response = client.post(PLAN_URL, body(departure), format="json")
+    assert response.status_code == 200, response.data
+    conditions = response.json()["routes"][0]["checkpoints"][0]["conditions"]
+    assert (conditions["gust_mph"], conditions["temp_f"]) == (None, None)
+    assert conditions["wind_mph"] > 0

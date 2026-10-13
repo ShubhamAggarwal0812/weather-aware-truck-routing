@@ -94,29 +94,30 @@ def _segment(cp: PlannedCheckpoint, route: Route) -> dict[str, Any]:
     }
 
 
-def _checkpoint(cp: PlannedCheckpoint) -> dict[str, Any]:
-    assert cp.sample is not None and cp.assessment is not None
-    s = cp.sample
+def _checkpoint(checkpoint: PlannedCheckpoint) -> dict[str, Any]:
+    assert checkpoint.sample is not None and checkpoint.assessment is not None
+    sample, placement = checkpoint.sample, checkpoint.placement
     return {
-        "index": cp.placement.index,
-        "mile": _mi(cp.placement.distance_m),
-        "covers_mi": [_mi(cp.placement.covers_from_m), _mi(cp.placement.covers_to_m)],
-        "lat": round(cp.position[0], 5),
-        "lon": round(cp.position[1], 5),
-        "eta": iso(cp.eta),
-        "drive_time_s": round(cp.drive_s),
-        "level": cp.assessment.level.key,
+        "index": placement.index,
+        "mile": _mi(placement.distance_m),
+        "covers_mi": [_mi(placement.covers_from_m), _mi(placement.covers_to_m)],
+        "lat": round(checkpoint.position[0], 5),
+        "lon": round(checkpoint.position[1], 5),
+        "eta": iso(checkpoint.eta),
+        "drive_time_s": round(checkpoint.drive_s),
+        "level": checkpoint.assessment.level.key,
         "conditions": {
-            "wind_mph": round(s.wind_mph, 1),
-            "gust_mph": round(s.gust_mph, 1),
-            "rain_in_hr": round(s.rain_in_hr, 3),
-            "snow_in_hr": round(s.snow_in_hr, 3),
-            "temp_f": round(s.temp_f),
+            "wind_mph": round(sample.wind_mph, 1),
+            "gust_mph": None if sample.gust_mph is None else round(sample.gust_mph, 1),
+            "rain_in_hr": round(sample.rain_in_hr, 3),
+            "snow_in_hr": round(sample.snow_in_hr, 3),
+            "temp_f": None if sample.temp_f is None else round(sample.temp_f),
         },
         "factors": [
-            {"condition": f.condition, "level": f.level.key, "load_rule": f.load_rule} for f in cp.assessment.factors
+            {"condition": factor.condition, "level": factor.level.key, "load_rule": factor.load_rule}
+            for factor in checkpoint.assessment.factors
         ],
-        "drivers": [f.condition for f in cp.assessment.drivers],
+        "drivers": [factor.condition for factor in checkpoint.assessment.drivers],
     }
 
 
@@ -157,7 +158,7 @@ def _positions(route: Route, trip: TripInput) -> list[list[float]]:
 def _recommendation(plan: TripPlan) -> dict[str, Any]:
     best = plan.best
     safe = best.miles(RiskLevel.NO_TRAVEL) == 0
-    fastest = min(plan.routes, key=lambda p: p.travel_s).id
+    fastest = min(plan.routes, key=lambda route: route.travel_s).id
     if not safe:
         headline = (
             f"No route is safe at this departure time. Route {best.route_id} has the least No Travel "
@@ -171,32 +172,65 @@ def _recommendation(plan: TripPlan) -> dict[str, Any]:
         "route_id": best.route_id,
         "safe": safe,
         "headline": headline,
-        "reasons": [_reason(best.route_id, c) for c in plan.comparisons],
+        "reasons": [_reason(best.route_id, comparison) for comparison in plan.comparisons],
         "comparisons": [
             {
-                "route_id": c.route_id,
-                "criterion": c.criterion,
-                "recommended_value": c.recommended_value,
-                "other_value": c.other_value,
+                "route_id": comparison.route_id,
+                "criterion": comparison.criterion,
+                "value": round(comparison.value, _COMPARISON_PLACES[comparison.criterion]),
+                "leader_id": comparison.leader_id,
+                "leader_value": round(comparison.leader_value, _COMPARISON_PLACES[comparison.criterion]),
             }
-            for c in plan.comparisons
+            for comparison in plan.comparisons
         ],
     }
 
 
-def _reason(best_id: str, c: Comparison) -> str:
-    a, b, other = c.recommended_value, c.other_value, c.route_id
-    if c.criterion == "no_travel_miles":
-        return f"Fewer No Travel miles than Route {other} ({a:g} vs {b:g} mi)."
-    if c.criterion == "severe_miles":
-        return f"Fewer Severe miles than Route {other} ({a:g} vs {b:g} mi)."
-    if c.criterion == "high_miles":
-        return f"Same Severe mileage as Route {other}, fewer High miles ({a:g} vs {b:g} mi)."
-    if c.criterion == "average_risk":
-        return f"Same Severe and High mileage as Route {other}, lower average risk ({a:.2f} vs {b:.2f})."
-    if c.criterion == "travel_time":
-        return f"Same weather risk as Route {other} and {_duration(b - a)} faster."
-    return f"Ties with Route {other} on every criterion; Route {best_id} comes first in the provider's order."
+# Any No Travel at all decides the ranking, so even a sliver of it keeps a digit.
+_COMPARISON_PLACES = {
+    "no_travel_miles": 3,
+    "severe_miles": 2,
+    "high_miles": 2,
+    "average_risk": 3,
+    "travel_time": 0,
+    "tie": 0,
+}
+_LEVEL_NAMES = {"no_travel_miles": "No Travel", "severe_miles": "Severe", "high_miles": "High"}
+
+
+def _reason(recommended_id: str, comparison: Comparison) -> str:
+    other, leader = comparison.route_id, comparison.leader_id
+    value, leader_value = comparison.value, comparison.leader_value
+    if comparison.criterion == "tie":
+        return (
+            f"Ties with Route {other} on every criterion; Route {recommended_id} comes first in the provider's order."
+        )
+    if comparison.criterion == "travel_time":
+        gap = _duration(value - leader_value)
+        if leader == recommended_id:
+            return f"Same weather risk as Route {other} and {gap} faster."
+        return f"Route {other} has the same weather risk as Route {leader} but takes {gap} longer."
+    if comparison.criterion == "average_risk":
+        if leader == recommended_id:
+            return (
+                f"Same Severe and High mileage as Route {other}, "
+                f"lower average risk ({leader_value:.2f} vs {value:.2f})."
+            )
+        return f"Route {other} has a higher average risk than Route {leader} ({value:.2f} vs {leader_value:.2f})."
+    level = _LEVEL_NAMES[comparison.criterion]
+    if leader != recommended_id:
+        return (
+            f"Route {other} has more {level} miles than Route {leader} ({_miles(value)} vs {_miles(leader_value)} mi)."
+        )
+    values = f"({_miles(leader_value)} vs {_miles(value)} mi)"
+    if comparison.criterion == "high_miles":
+        return f"Same Severe mileage as Route {other}, fewer High miles {values}."
+    return f"Fewer {level} miles than Route {other} {values}."
+
+
+def _miles(value: float) -> str:
+    # A sliver of No Travel decides the ranking, so it must not print as 0.
+    return "under 0.01" if 0 < value < 0.005 else f"{round(value, 2):g}"
 
 
 def _duration(seconds: float) -> str:

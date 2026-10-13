@@ -152,10 +152,10 @@ class ConfigSerializer(serializers.Serializer):
 
 class ConditionsSerializer(serializers.Serializer):
     wind_mph = serializers.FloatField()
-    gust_mph = serializers.FloatField()
+    gust_mph = serializers.FloatField(allow_null=True, help_text="Shown only, not scored; null if not forecast.")
     rain_in_hr = serializers.FloatField()
     snow_in_hr = serializers.FloatField()
-    temp_f = serializers.IntegerField()
+    temp_f = serializers.IntegerField(allow_null=True, help_text="Shown only, not scored; null if not forecast.")
 
 
 class FactorSerializer(serializers.Serializer):
@@ -236,8 +236,11 @@ class ComparisonSerializer(serializers.Serializer):
     criterion = serializers.ChoiceField(
         choices=["no_travel_miles", "severe_miles", "high_miles", "average_risk", "travel_time", "tie"]
     )
-    recommended_value = serializers.FloatField()
-    other_value = serializers.FloatField()
+    value = serializers.FloatField(help_text="This route's value on the criterion that ruled it out.")
+    leader_id = serializers.CharField(
+        help_text="The route leading on that criterion when this one was ruled out; for a tie, the recommended route."
+    )
+    leader_value = serializers.FloatField()
 
 
 class RecommendationSerializer(serializers.Serializer):

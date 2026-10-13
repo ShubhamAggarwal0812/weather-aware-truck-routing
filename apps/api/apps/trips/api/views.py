@@ -15,8 +15,10 @@ from apps.trips.domain.risk import rules_table
 from apps.trips.services.corridor import corridor_forecast
 from apps.trips.services.planning import plan_trip
 from apps.trips.services.presenters import present_plan
+from apps.weather.budget import WeatherBudget
 from apps.weather.forecast import OpenMeteoClient
 from common.api.serializers import ErrorSerializer
+from common.api.throttling import client_address
 
 from .serializers import (
     ConfigSerializer,
@@ -27,12 +29,22 @@ from .serializers import (
 )
 
 PLAN_CACHE_TTL_S = 10 * 60
-ERRORS = {400: ErrorSerializer, 422: ErrorSerializer, 502: ErrorSerializer, 503: ErrorSerializer}
+ERRORS = {
+    400: ErrorSerializer,
+    422: ErrorSerializer,
+    429: ErrorSerializer,
+    502: ErrorSerializer,
+    503: ErrorSerializer,
+}
 
 
 def _cache_key(prefix: str, payload: dict) -> str:
     raw = json.dumps(payload, sort_keys=True, default=str)
     return f"{prefix}:{hashlib.sha256(raw.encode()).hexdigest()}"
+
+
+def _forecast_source(request: Request) -> OpenMeteoClient:
+    return OpenMeteoClient(budget=WeatherBudget(client_address(request)))
 
 
 class ConfigView(APIView):
@@ -54,7 +66,7 @@ class PlanView(APIView):
         key = _cache_key("plan", {**serializer.validated_data, "provider": settings.ROUTING_PROVIDER})
         result = cache.get(key)
         if result is None:
-            plan = plan_trip(serializer.to_trip(), get_routing_provider(), OpenMeteoClient())
+            plan = plan_trip(serializer.to_trip(), get_routing_provider(), _forecast_source(request))
             result = present_plan(plan)
             cache.set(key, result, PLAN_CACHE_TTL_S)
         return Response(result)
@@ -73,4 +85,4 @@ class CorridorForecastView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         lines = [[(lat, lon) for lat, lon in line] for line in data["lines"]]
-        return Response(corridor_forecast(lines, data["departure"], data["load_weight_lb"], OpenMeteoClient()))
+        return Response(corridor_forecast(lines, data["departure"], data["load_weight_lb"], _forecast_source(request)))

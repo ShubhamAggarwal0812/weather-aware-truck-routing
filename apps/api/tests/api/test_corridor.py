@@ -1,12 +1,16 @@
 from datetime import UTC
 
+import respx
+from django.core.cache import caches
 from rest_framework.test import APIClient
 
+from apps.weather.budget import WeatherBudget
 from tests.fakes import FakeProvider, FakeWeather, back_and_forth_line, storm
 
 from .conftest import install
 
 client = APIClient()
+TEST_CLIENT_ADDRESS = "127.0.0.1"
 
 
 def test_corridor_grid_has_risk_for_every_hour(monkeypatch, departure):
@@ -61,3 +65,15 @@ def test_should_refuse_a_corridor_past_the_cell_cap_without_fetching(monkeypatch
     assert response.status_code == 422
     assert "too much ground" in response.json()["error"]
     assert weather.calls == []
+
+
+@respx.mock
+def test_should_refuse_a_heatmap_past_the_client_weather_allowance_without_fetching(settings, departure):
+    settings.WEATHER_BUDGET = "1000/day"
+    caches["limits"].clear()
+    WeatherBudget(TEST_CLIENT_ADDRESS).spend(990)
+    open_meteo = respx.post("https://api.open-meteo.com/v1/forecast")
+    response = _post_corridor([[[40.0, -105.0], [40.0, -95.0]]], departure)
+    assert response.status_code == 429
+    assert "weather data" in response.json()["error"]
+    assert open_meteo.call_count == 0

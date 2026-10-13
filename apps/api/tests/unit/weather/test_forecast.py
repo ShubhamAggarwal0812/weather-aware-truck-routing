@@ -7,8 +7,9 @@ import httpx
 import pytest
 import respx
 
+from apps.weather import forecast
 from apps.weather.exceptions import WeatherError
-from apps.weather.forecast import HourlySeries, OpenMeteoClient, _filled
+from apps.weather.forecast import HourlySeries, OpenMeteoClient, _precipitation, _scored, _short_gaps_filled
 
 T0 = datetime(2026, 10, 13, 12, tzinfo=UTC)
 URL = "https://api.open-meteo.com/v1/forecast"
@@ -105,20 +106,68 @@ def test_should_batch_points_and_sum_rain_and_showers():
 
 
 @respx.mock
-def test_should_fetch_whole_days_from_the_start():
+def test_should_fetch_through_the_hour_after_the_last_sample_and_no_further():
     route = respx.post(URL).mock(side_effect=_answer)
-    (series,) = _client().hourly([(30, -90)], T0, T0 + timedelta(hours=30))
-    assert _window(_form(route.calls.last.request)) == (T0, 49)
-    assert series.last_hour == T0 + timedelta(hours=48)
+    last_sample = T0 + timedelta(hours=30, minutes=20)
+    hour_whose_total_covers_the_last_sample = T0 + timedelta(hours=31)
+    (series,) = _client().hourly([(30, -90)], T0 + timedelta(minutes=10), last_sample)
+    assert _window(_form(route.calls.last.request)) == (T0, 32)
+    assert series.last_hour == hour_whose_total_covers_the_last_sample
+    assert series.at(last_sample).rain_in_hr == pytest.approx(0.15)
 
 
 @respx.mock
-def test_should_reuse_the_cached_day_for_a_later_arrival_from_the_same_start_hour():
+def test_should_reuse_a_cached_series_that_reaches_far_enough_from_the_same_start_hour():
     route = respx.post(URL).mock(side_effect=_answer)
     client = _client()
-    client.hourly([(30, -90)], T0, T0 + timedelta(hours=2))
-    client.hourly([(30, -90)], T0 + timedelta(minutes=40), T0 + timedelta(hours=20))
+    client.hourly([(30, -90)], T0, T0 + timedelta(hours=20))
+    client.hourly([(30, -90)], T0 + timedelta(minutes=40), T0 + timedelta(hours=2))
     assert route.call_count == 1
+
+
+@respx.mock
+def test_should_refuse_a_window_past_the_forecast_without_asking_for_it(monkeypatch):
+    route = respx.post(URL).mock(side_effect=_answer)
+    last_forecast_hour = T0 + timedelta(hours=3)
+    monkeypatch.setattr(forecast, "forecast_limit", lambda: last_forecast_hour)
+    client = _client()
+    reads_the_last_forecast_hour = last_forecast_hour - timedelta(minutes=1)
+    client.hourly([(30, -90)], T0, reads_the_last_forecast_hour)
+    with pytest.raises(WeatherError, match="16 days"):
+        client.hourly([(31, -90)], T0, last_forecast_hour)
+    assert route.call_count == 1
+
+
+class RecordingBudget:
+    def __init__(self, refuse: bool = False):
+        self.spent: list[int] = []
+        self.refuse = refuse
+
+    def spend(self, locations):
+        if self.refuse:
+            raise WeatherError("allowance", status=429)
+        self.spent.append(locations)
+
+
+@respx.mock
+def test_should_charge_the_budget_only_for_locations_it_has_to_fetch():
+    respx.post(URL).mock(side_effect=_answer)
+    budget = RecordingBudget()
+    client = OpenMeteoClient(base_url="https://api.open-meteo.com", api_key="", budget=budget)
+    client.hourly([(30, -90), (31, -90)], T0, T0 + timedelta(hours=2))
+    client.hourly([(30, -90), (31, -90), (32, -90)], T0, T0 + timedelta(hours=2))
+    client.hourly([(30, -90)], T0, T0 + timedelta(hours=1))
+    assert budget.spent == [2, 1]
+
+
+@respx.mock
+def test_should_fetch_nothing_when_the_budget_refuses():
+    route = respx.post(URL).mock(side_effect=_answer)
+    client = OpenMeteoClient(base_url="https://api.open-meteo.com", api_key="", budget=RecordingBudget(refuse=True))
+    end = T0 + timedelta(hours=2)
+    with pytest.raises(WeatherError, match="allowance"):
+        client.hourly([(30, -90)], T0, end)
+    assert route.call_count == 0
 
 
 @respx.mock
@@ -181,21 +230,42 @@ def test_should_reject_a_location_without_hourly_data():
 
 
 def test_should_fill_short_gaps_with_the_nearest_earlier_value():
-    assert _filled([None, 1.0, None, None, 2.0, None]) == (1.0, 1.0, 1.0, 1.0, 2.0, 2.0)
+    assert _scored([None, 1.0, None, None, 2.0, None]) == (1.0, 1.0, 1.0, 1.0, 2.0, 2.0)
 
 
-def test_should_reject_a_gap_longer_than_three_hours():
+def test_should_reject_a_gap_longer_than_three_hours_in_a_scored_variable():
     with pytest.raises(WeatherError, match="incomplete"):
-        _filled([5.0, 6.0, None, None, None, None])
+        _scored([5.0, 6.0, None, None, None, None])
 
 
-def test_should_give_a_variable_with_no_values_its_default():
-    assert _filled([None, None], default=0.0) == (0.0, 0.0)
+def test_should_leave_a_long_gap_unknown_in_a_variable_that_is_only_shown():
+    assert _short_gaps_filled([1.0, None, None, None, None, 2.0, None]) == (1.0, None, None, None, None, 2.0, 2.0)
+    assert _short_gaps_filled([None, None]) == (None, None)
 
 
-def test_should_reject_a_variable_with_no_values_and_no_default():
+def test_should_read_a_precipitation_type_with_no_values_as_none_of_it():
+    assert _precipitation([None, None]) == (0.0, 0.0)
+
+
+def test_should_reject_a_scored_variable_with_no_values():
     with pytest.raises(WeatherError, match="incomplete"):
-        _filled([None, None])
+        _scored([None, None])
+
+
+@respx.mock
+def test_should_show_gusts_and_temperature_as_unknown_instead_of_failing_without_them():
+    def handler(request):
+        start, hours = _window(_form(request))
+        location = _location(30, -90, start, hours)
+        location["hourly"]["wind_gusts_10m"] = [20.0, 20.0] + [None] * (hours - 2)
+        location["hourly"]["temperature_2m"] = [None] * hours
+        return httpx.Response(200, json=location)
+
+    respx.post(URL).mock(side_effect=handler)
+    (series,) = _client().hourly([(30, -90)], T0, T0 + timedelta(hours=6))
+    early, late = series.at(T0 + timedelta(minutes=30)), series.at(T0 + timedelta(hours=5))
+    assert (early.wind_mph, early.gust_mph, early.temp_f) == (12.0, 20.0, None)
+    assert (late.wind_mph, late.gust_mph) == (12.0, None)
 
 
 @respx.mock

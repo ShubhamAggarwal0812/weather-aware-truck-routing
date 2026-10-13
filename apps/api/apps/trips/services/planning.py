@@ -17,8 +17,7 @@ from apps.trips.domain import hos
 from apps.trips.domain.checkpoints import Placement, place_checkpoints
 from apps.trips.domain.recommend import Comparison, RouteScore, recommend
 from apps.trips.domain.risk import Assessment, Conditions, RiskLevel, assess
-from apps.weather.exceptions import WeatherError
-from apps.weather.forecast import HOUR, ForecastSource, Sample, floor_hour, forecast_limit
+from apps.weather.forecast import ForecastSource, Sample
 from common.geo import LatLon, point_at_distance
 
 # Load weight is cargo; routing needs the whole truck. 35,000 lb is a typical
@@ -101,18 +100,11 @@ def plan_trip(trip: TripInput, provider: RoutingProvider, weather: ForecastSourc
         raise RoutingError("No route was found between these places.", status=422)
 
     planned = [_place_checkpoints(chr(ord("A") + i), route, trip) for i, route in enumerate(routes)]
-    if _forecast_end(planned) > forecast_limit():
-        raise WeatherError("This trip ends beyond the 16-day forecast. Choose an earlier departure.")
     _attach_weather(planned, trip, weather)
 
     scores = {p.id: _score(p) for p in planned}
     ranking, comparisons = recommend(list(scores.values()))
     return TripPlan(trip, provider, planned, scores, ranking, comparisons)
-
-
-def _forecast_end(planned: list[PlannedRoute]) -> datetime:
-    # Precipitation is the total for the hour ending at each timestamp, so the latest arrival reads the next hour.
-    return floor_hour(max(route.arrival for route in planned)) + HOUR
 
 
 def _place_checkpoints(route_id: str, route: Route, trip: TripInput) -> PlannedRoute:
@@ -133,13 +125,13 @@ def _snap(p: LatLon) -> LatLon:
 
 def _attach_weather(planned: list[PlannedRoute], trip: TripInput, weather: ForecastSource) -> None:
     """One batched forecast fetch for every checkpoint on every route."""
-    snapped = sorted({_snap(cp.position) for p in planned for cp in p.checkpoints})
-    start = floor_hour(trip.departure)
-    by_point = dict(zip(snapped, weather.hourly(snapped, start, _forecast_end(planned))))
-    for p in planned:
-        for cp in p.checkpoints:
-            cp.sample = by_point[_snap(cp.position)].at(cp.eta)
-            cp.assessment = assess(conditions(cp.sample), trip.load_weight_lb)
+    snapped = sorted({_snap(checkpoint.position) for route in planned for checkpoint in route.checkpoints})
+    latest_arrival = max(route.arrival for route in planned)
+    by_point = dict(zip(snapped, weather.hourly(snapped, trip.departure, latest_arrival)))
+    for route in planned:
+        for checkpoint in route.checkpoints:
+            checkpoint.sample = by_point[_snap(checkpoint.position)].at(checkpoint.eta)
+            checkpoint.assessment = assess(conditions(checkpoint.sample), trip.load_weight_lb)
 
 
 def conditions(sample: Sample) -> Conditions:

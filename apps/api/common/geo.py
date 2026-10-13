@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_right
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from itertools import pairwise
 
 LatLon = tuple[float, float]
@@ -41,6 +41,14 @@ def interpolate(xs: Sequence[float], ys: Sequence[float], x: float) -> float:
     if span <= 0:
         return ys[i + 1]
     return ys[i] + (ys[i + 1] - ys[i]) * (x - xs[i]) / span
+
+
+def sample_distances(start_meters: float, end_meters: float, step_meters: float) -> Iterator[float]:
+    distance = start_meters
+    while distance < end_meters:
+        yield distance
+        distance += step_meters
+    yield end_meters
 
 
 def point_at_distance(points: Sequence[LatLon], cum: Sequence[float], distance_m: float) -> LatLon:

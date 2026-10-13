@@ -7,6 +7,10 @@ safer than one without, so No Travel miles are compared first.
 
 Miles are compared at 0.1 mi and average risk at 0.01. Below that the difference
 is sampling noise, and the next criterion (finally travel time) decides.
+
+A route that is ruled out is explained against the route leading on that criterion,
+not the one recommended in the end: only its gap from the leader is sure to be at
+least the tolerance, so only that comparison shows numbers that visibly differ.
 """
 
 from __future__ import annotations
@@ -40,8 +44,9 @@ class RouteScore:
 class Comparison:
     route_id: str
     criterion: str  # "no_travel_miles" | "severe_miles" | "high_miles" | "average_risk" | "travel_time" | "tie"
-    recommended_value: float
-    other_value: float
+    value: float
+    leader_id: str
+    leader_value: float
 
 
 @dataclass(frozen=True)
@@ -49,45 +54,39 @@ class _Criterion:
     name: str
     value: Callable[[RouteScore], float]
     tolerance: float
-    decimal_places: int
 
 
 CRITERIA = (
-    _Criterion("no_travel_miles", lambda score: score.miles(RiskLevel.NO_TRAVEL), 0.1, 2),
-    _Criterion("severe_miles", lambda score: score.miles(RiskLevel.SEVERE), 0.1, 2),
-    _Criterion("high_miles", lambda score: score.miles(RiskLevel.HIGH), 0.1, 2),
-    _Criterion("average_risk", lambda score: score.average_risk, 0.01, 3),
-    _Criterion("travel_time", lambda score: score.travel_s, 60.0, 0),
+    _Criterion("no_travel_miles", lambda score: score.miles(RiskLevel.NO_TRAVEL), 0.1),
+    _Criterion("severe_miles", lambda score: score.miles(RiskLevel.SEVERE), 0.1),
+    _Criterion("high_miles", lambda score: score.miles(RiskLevel.HIGH), 0.1),
+    _Criterion("average_risk", lambda score: score.average_risk, 0.01),
+    _Criterion("travel_time", lambda score: score.travel_s, 60.0),
 )
 
 
 def _select(scores: list[RouteScore]) -> tuple[RouteScore, dict[str, Comparison]]:
     remaining = list(scores)
-    ruled_out: dict[str, tuple[_Criterion, RouteScore]] = {}
+    comparisons: dict[str, Comparison] = {}
     for criterion in CRITERIA:
-        values = {score.route_id: criterion.value(score) for score in remaining}
-        leading_value = min(values.values())
+        leader = min(remaining, key=criterion.value)
+        leading_value = criterion.value(leader)
         # Measured from the leader, not by rounding into buckets, so values a hair apart can't land in different
         # buckets; and any No Travel at all loses to none, because no amount of it is sampling noise.
         if criterion.name == "no_travel_miles" and leading_value == 0:
-            kept = {route_id for route_id, value in values.items() if value == 0}
+            kept = [score for score in remaining if criterion.value(score) == 0]
         else:
-            kept = {route_id for route_id, value in values.items() if value < leading_value + criterion.tolerance}
-        ruled_out.update((score.route_id, (criterion, score)) for score in remaining if score.route_id not in kept)
-        remaining = [score for score in remaining if score.route_id in kept]
+            kept = [score for score in remaining if criterion.value(score) < leading_value + criterion.tolerance]
+        for score in remaining:
+            if score not in kept:
+                comparisons[score.route_id] = Comparison(
+                    score.route_id, criterion.name, criterion.value(score), leader.route_id, leading_value
+                )
+        remaining = kept
     # The scores arrive in the provider's order, so a full tie goes to the provider's first route.
     best = remaining[0]
-    comparisons = {
-        route_id: Comparison(
-            route_id,
-            criterion.name,
-            round(criterion.value(best), criterion.decimal_places),
-            round(criterion.value(other), criterion.decimal_places),
-        )
-        for route_id, (criterion, other) in ruled_out.items()
-    }
     for tied in remaining[1:]:
-        comparisons[tied.route_id] = Comparison(tied.route_id, "tie", 0.0, 0.0)
+        comparisons[tied.route_id] = Comparison(tied.route_id, "tie", 0.0, best.route_id, 0.0)
     return best, comparisons
 
 

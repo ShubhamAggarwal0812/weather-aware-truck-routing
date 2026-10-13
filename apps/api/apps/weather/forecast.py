@@ -19,6 +19,7 @@ import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from itertools import groupby
 from typing import Protocol
 
 from django.conf import settings
@@ -27,6 +28,7 @@ from django.core.cache import cache
 from common.geo import LatLon
 from common.http import UpstreamError, request_json
 
+from .budget import WeatherBudget
 from .exceptions import WeatherError
 
 log = logging.getLogger(__name__)
@@ -43,9 +45,9 @@ _attempts = ThreadPoolExecutor(max_workers=2 * MAX_PARALLEL, thread_name_prefix=
 CACHE_TTL_S = 30 * 60
 FORECAST_DAYS = 16
 HOUR = timedelta(hours=1)
-DAY = timedelta(days=1)
 TIME_FORMAT = "%Y-%m-%dT%H:%M"
 INCOMPLETE_FORECAST = "The weather service returned an incomplete forecast."
+BEYOND_FORECAST = "The weather forecast only reaches 16 days ahead. Choose an earlier departure."
 # Models occasionally drop an hour; a longer run of nulls means the forecast stops short.
 MAX_FILLED_GAP_HOURS = 3
 
@@ -57,10 +59,10 @@ def floor_hour(t: datetime) -> datetime:
 @dataclass(frozen=True)
 class Sample:
     wind_mph: float
-    gust_mph: float
+    gust_mph: float | None
     rain_in_hr: float
     snow_in_hr: float
-    temp_f: float
+    temp_f: float | None
 
 
 @dataclass(frozen=True)
@@ -69,10 +71,10 @@ class HourlySeries:
 
     start: datetime
     wind_mph: tuple[float, ...]
-    gust_mph: tuple[float, ...]
+    gust_mph: tuple[float | None, ...]
     rain_in: tuple[float, ...]  # rain + showers in the hour ending at each timestamp
     snow_in: tuple[float, ...]
-    temp_f: tuple[float, ...]
+    temp_f: tuple[float | None, ...]
 
     def __len__(self) -> int:
         return len(self.wind_mph)
@@ -81,28 +83,25 @@ class HourlySeries:
     def last_hour(self) -> datetime:
         return self.start + (len(self) - 1) * HOUR
 
-    def hour_index(self, t: datetime) -> int:
-        return int((floor_hour(t) - self.start) / HOUR)
+    def at(self, time: datetime) -> Sample:
+        offset_hours = (time - self.start) / HOUR
+        index = min(max(0, math.floor(offset_hours)), len(self) - 1)
+        fraction = min(max(0.0, offset_hours - index), 1.0)
+        next_index = min(index + 1, len(self) - 1)
 
-    def covers(self, t: datetime) -> bool:
-        i = self.hour_index(t)
-        return i >= 0 and i + 1 < len(self)
+        def interpolated(values: tuple[float, ...]) -> float:
+            return values[index] + (values[next_index] - values[index]) * fraction
 
-    def at(self, t: datetime) -> Sample:
-        offset_h = (t - self.start) / HOUR
-        i = min(max(0, math.floor(offset_h)), len(self) - 1)
-        frac = min(max(0.0, offset_h - i), 1.0)
-        nxt = min(i + 1, len(self) - 1)
-
-        def lerp(values: tuple[float, ...]) -> float:
-            return values[i] + (values[nxt] - values[i]) * frac
+        def interpolated_if_known(values: tuple[float | None, ...]) -> float | None:
+            before, after = values[index], values[next_index]
+            return None if before is None or after is None else before + (after - before) * fraction
 
         return Sample(
-            wind_mph=lerp(self.wind_mph),
-            gust_mph=lerp(self.gust_mph),
-            rain_in_hr=self.rain_in[nxt],
-            snow_in_hr=self.snow_in[nxt],
-            temp_f=lerp(self.temp_f),
+            wind_mph=interpolated(self.wind_mph),
+            gust_mph=interpolated_if_known(self.gust_mph),
+            rain_in_hr=self.rain_in[next_index],
+            snow_in_hr=self.snow_in[next_index],
+            temp_f=interpolated_if_known(self.temp_f),
         )
 
     def hour(self, i: int) -> Sample:
@@ -124,33 +123,39 @@ def forecast_limit() -> datetime:
 
 
 class OpenMeteoClient:
-    def __init__(self, base_url: str | None = None, api_key: str | None = None):
+    def __init__(self, base_url: str | None = None, api_key: str | None = None, budget: WeatherBudget | None = None):
         self.base_url = (base_url or settings.OPEN_METEO_BASE_URL).rstrip("/")
         self.api_key = settings.OPEN_METEO_API_KEY if api_key is None else api_key
+        self.budget = budget
 
     def hourly(self, points: list[LatLon], start: datetime, end: datetime) -> list[HourlySeries]:
-        """Forecasts for ``points`` from ``start`` to ``end`` (both whole UTC hours, inclusive)."""
-        start, end = floor_hour(start), floor_hour(end)
+        # Precipitation at ``end`` is the total stamped on the following hour, so callers can't forget that hour.
+        start, last_hour = floor_hour(start), floor_hour(end) + HOUR
+        if last_hour > forecast_limit():
+            raise WeatherError(BEYOND_FORECAST)
         keys = [_cache_key(point, start) for point in points]
-        cached = {key: series for key, series in cache.get_many(keys).items() if series.last_hour >= end}
-        missing = [i for i, k in enumerate(keys) if k not in cached]
+        cached = {key: series for key, series in cache.get_many(keys).items() if series.last_hour >= last_hour}
+        missing = [index for index, key in enumerate(keys) if key not in cached]
         if missing:
-            # Whole days from the start, so trips that only differ in arrival time share the cached series.
-            whole_days_end = start + math.ceil((end - start) / DAY) * DAY
-            fetch_end = max(end, min(whole_days_end, forecast_limit()))
-            batches = [missing[i : i + BATCH_SIZE] for i in range(0, len(missing), BATCH_SIZE)]
+            if self.budget:
+                self.budget.spend(len(missing))
+            batches = [missing[first : first + BATCH_SIZE] for first in range(0, len(missing), BATCH_SIZE)]
             with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
                 results = list(
                     pool.map(
-                        lambda batch: self._hedged([points[index] for index in batch], start, fetch_end),
+                        lambda batch: self._hedged([points[index] for index in batch], start, last_hour),
                         batches,
                     )
                 )
-            fresh = {keys[i]: series for batch, out in zip(batches, results) for i, series in zip(batch, out)}
+            fresh = {
+                keys[index]: series
+                for batch, batch_series in zip(batches, results)
+                for index, series in zip(batch, batch_series)
+            }
             cache.set_many(fresh, CACHE_TTL_S)
             cached.update(fresh)
         log.info("weather: %d points, %d fetched", len(points), len(missing))
-        return [cached[k] for k in keys]
+        return [cached[key] for key in keys]
 
     def _hedged(self, points: list[LatLon], start: datetime, end: datetime) -> list[HourlySeries]:
         """Fetch a batch; if it's slow, race a second identical request against it."""
@@ -230,35 +235,43 @@ def _cache_key(point: LatLon, start: datetime) -> str:
     return f"open-meteo:{point[0]:.4f},{point[1]:.4f}:{start:%Y%m%d%H}"
 
 
-def _filled(values: list[float | None], default: float | None = None) -> tuple[float, ...]:
-    if all(value is None for value in values):
-        # A model that doesn't report a precipitation type reports none of it; missing wind or
-        # temperature is unknown weather, which must not be scored as calm.
-        if default is None:
-            raise WeatherError(INCOMPLETE_FORECAST)
-        return (default,) * len(values)
-    filled: list[float] = []
-    previous = next(value for value in values if value is not None)
-    gap_hours = 0
-    for value in values:
-        if value is None:
-            gap_hours += 1
-            if gap_hours > MAX_FILLED_GAP_HOURS:
-                raise WeatherError(INCOMPLETE_FORECAST)
+def _short_gaps_filled(values: list[float | None]) -> tuple[float | None, ...]:
+    first_known = next((float(value) for value in values if value is not None), None)
+    filled: list[float | None] = []
+    for is_gap, run in groupby(values, key=lambda value: value is None):
+        hours = list(run)
+        if not is_gap:
+            filled.extend(float(value) for value in hours if value is not None)
+        elif len(hours) <= MAX_FILLED_GAP_HOURS:
+            filled.extend([filled[-1] if filled else first_known] * len(hours))
         else:
-            previous, gap_hours = value, 0
-        filled.append(float(previous))
+            filled.extend([None] * len(hours))
     return tuple(filled)
 
 
+def _scored(values: list[float | None]) -> tuple[float, ...]:
+    filled = _short_gaps_filled(values)
+    known = tuple(value for value in filled if value is not None)
+    if len(known) != len(filled):
+        # Missing wind, rain or snow is unknown weather, which must not be scored as calm.
+        raise WeatherError(INCOMPLETE_FORECAST)
+    return known
+
+
+def _precipitation(values: list[float | None]) -> tuple[float, ...]:
+    # A model that doesn't report a precipitation type reports none of it.
+    return (0.0,) * len(values) if all(value is None for value in values) else _scored(values)
+
+
 def _parse(hourly: dict, start: datetime) -> HourlySeries:
-    rain = _filled(hourly["rain"], default=0.0)
-    showers = _filled(hourly["showers"], default=0.0)
+    rain = _precipitation(hourly["rain"])
+    showers = _precipitation(hourly["showers"])
     return HourlySeries(
         start=start,
-        wind_mph=_filled(hourly["wind_speed_10m"]),
-        gust_mph=_filled(hourly["wind_gusts_10m"]),
-        rain_in=tuple(r + s for r, s in zip(rain, showers)),
-        snow_in=_filled(hourly["snowfall"], default=0.0),
-        temp_f=_filled(hourly["temperature_2m"]),
+        wind_mph=_scored(hourly["wind_speed_10m"]),
+        # Gusts and temperature are shown but never scored, so a missing hour shows as unknown, not a failed plan.
+        gust_mph=_short_gaps_filled(hourly["wind_gusts_10m"]),
+        rain_in=tuple(rain_inches + shower_inches for rain_inches, shower_inches in zip(rain, showers)),
+        snow_in=_precipitation(hourly["snowfall"]),
+        temp_f=_short_gaps_filled(hourly["temperature_2m"]),
     )

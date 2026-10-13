@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import math
 from collections import defaultdict
-from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 
 from common.geo import (
@@ -19,6 +18,7 @@ from common.geo import (
     destination_point,
     haversine_m,
     point_at_distance,
+    sample_distances,
 )
 
 from .providers.base import Route, RouteRequest, RoutingProvider
@@ -28,8 +28,8 @@ log = logging.getLogger(__name__)
 WANTED_ROUTES = 3
 MAX_SLOWDOWN = 1.6  # a detour may take at most 60% longer than the fastest route
 SAME_ROUTE_OVERLAP = 0.85  # sharing more than this much distance counts as the same route
-NEAR_M = 1_000
-CELL_DEG = 0.02
+NEAR_METERS = 1_000
+CELL_DEGREES = 0.02
 # Both carriageways of a divided road lie within SPUR_NEAR_METERS of each other, and an
 # ordinary turn at a via point retraces far less than MAX_SPUR_METERS.
 MAX_SPUR_METERS = 2_000
@@ -42,30 +42,31 @@ OUTWARD_SAMPLE_STEP_METERS = 200
 
 
 class _RouteIndex:
-    """Grid hash of densified route points for fast 'is this near route X' checks."""
-
-    def __init__(self) -> None:
+    # Only the 3 x 3 cells around a point are searched, so a cell must be at least near_meters across.
+    def __init__(self, cell_degrees: float = CELL_DEGREES, near_meters: float = NEAR_METERS) -> None:
+        self.cell_degrees = cell_degrees
+        self.near_meters = near_meters
         self.cells: dict[tuple[int, int], list[LatLon]] = defaultdict(list)
 
-    def add(self, route: Route, step_m: float = 500) -> None:
-        d = 0.0
-        while d <= route.distance_m:
-            p = point_at_distance(route.points, route.cum_distance_m, d)
-            self.cells[_cell(p)].append(p)
-            d += step_m
+    def _cell(self, point: LatLon) -> tuple[int, int]:
+        return (math.floor(point[0] / self.cell_degrees), math.floor(point[1] / self.cell_degrees))
 
-    def near(self, p: LatLon) -> bool:
-        cr, cc = _cell(p)
-        for dr in (-1, 0, 1):
-            for dc in (-1, 0, 1):
-                for q in self.cells.get((cr + dr, cc + dc), ()):
-                    if haversine_m(p, q) <= NEAR_M:
-                        return True
-        return False
+    def add(
+        self, route: Route, step_meters: float = 500, start_meters: float = 0.0, end_meters: float | None = None
+    ) -> None:
+        last_meters = route.distance_m if end_meters is None else end_meters
+        for distance in sample_distances(start_meters, last_meters, step_meters):
+            point = point_at_distance(route.points, route.cum_distance_m, distance)
+            self.cells[self._cell(point)].append(point)
 
-
-def _cell(p: LatLon) -> tuple[int, int]:
-    return (math.floor(p[0] / CELL_DEG), math.floor(p[1] / CELL_DEG))
+    def near(self, point: LatLon) -> bool:
+        row, column = self._cell(point)
+        return any(
+            haversine_m(point, indexed) <= self.near_meters
+            for row_offset in (-1, 0, 1)
+            for column_offset in (-1, 0, 1)
+            for indexed in self.cells.get((row + row_offset, column + column_offset), ())
+        )
 
 
 def overlap_fraction(route: Route, index: _RouteIndex, step_m: float = 2_000) -> float:
@@ -125,17 +126,6 @@ def via_points(fastest: Route, fractions: tuple[float, ...], crow_m: float) -> l
     return out
 
 
-def _distances(start_meters: float, end_meters: float, step_meters: float) -> Iterator[float]:
-    distance = start_meters
-    while distance <= end_meters:
-        yield distance
-        distance += step_meters
-
-
-def _spur_cell(point: LatLon) -> tuple[int, int]:
-    return (math.floor(point[0] / SPUR_CELL_DEGREES), math.floor(point[1] / SPUR_CELL_DEGREES))
-
-
 def spur_length_meters(route: Route) -> float:
     if route.via is None:
         return 0.0
@@ -145,28 +135,21 @@ def spur_length_meters(route: Route) -> float:
         return point_at_distance(route.points, route.cum_distance_m, distance)
 
     turnaround = min(
-        _distances(0.0, route.distance_m, TURNAROUND_SEARCH_STEP_METERS),
+        sample_distances(0.0, route.distance_m, TURNAROUND_SEARCH_STEP_METERS),
         key=lambda distance: haversine_m(position_at(distance), via),
     )
-    return_leg: dict[tuple[int, int], list[LatLon]] = defaultdict(list)
-    return_end = min(route.distance_m, turnaround + SPUR_WINDOW_METERS)
-    for distance in _distances(turnaround, return_end, RETURN_SAMPLE_STEP_METERS):
-        point = position_at(distance)
-        return_leg[_spur_cell(point)].append(point)
-    retraced_meters = 0.0
+    return_leg = _RouteIndex(cell_degrees=SPUR_CELL_DEGREES, near_meters=SPUR_NEAR_METERS)
+    return_leg.add(
+        route,
+        step_meters=RETURN_SAMPLE_STEP_METERS,
+        start_meters=turnaround,
+        end_meters=min(route.distance_m, turnaround + SPUR_WINDOW_METERS),
+    )
     outward_start = max(0.0, turnaround - SPUR_WINDOW_METERS)
-    for distance in _distances(outward_start, turnaround, OUTWARD_SAMPLE_STEP_METERS):
-        point = position_at(distance)
-        row, column = _spur_cell(point)
-        neighbours = (
-            other
-            for row_offset in (-1, 0, 1)
-            for column_offset in (-1, 0, 1)
-            for other in return_leg.get((row + row_offset, column + column_offset), ())
-        )
-        if any(haversine_m(point, other) <= SPUR_NEAR_METERS for other in neighbours):
-            retraced_meters += OUTWARD_SAMPLE_STEP_METERS
-    return retraced_meters
+    outward = list(sample_distances(outward_start, turnaround, OUTWARD_SAMPLE_STEP_METERS))
+    # Each outward sample stands for the stretch after it, so the last one, the turnaround itself, isn't outward road.
+    outward_road = outward[:-1]
+    return OUTWARD_SAMPLE_STEP_METERS * sum(return_leg.near(position_at(distance)) for distance in outward_road)
 
 
 def _add_detours(routes: list[Route], candidates: list[Route | None]) -> None:

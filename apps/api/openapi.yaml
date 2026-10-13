@@ -99,6 +99,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: ''
+        '429':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
         '502':
           content:
             application/json:
@@ -138,6 +144,12 @@ paths:
                 $ref: '#/components/schemas/Error'
           description: ''
         '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '429':
           content:
             application/json:
               schema:
@@ -229,17 +241,23 @@ components:
           type: string
         criterion:
           $ref: '#/components/schemas/CriterionEnum'
-        recommended_value:
+        value:
           type: number
           format: double
-        other_value:
+          description: This route's value on the criterion that ruled it out.
+        leader_id:
+          type: string
+          description: The route leading on that criterion when this one was ruled
+            out; for a tie, the recommended route.
+        leader_value:
           type: number
           format: double
       required:
       - criterion
-      - other_value
-      - recommended_value
+      - leader_id
+      - leader_value
       - route_id
+      - value
     ConditionEnum:
       enum:
       - wind
@@ -259,6 +277,8 @@ components:
         gust_mph:
           type: number
           format: double
+          nullable: true
+          description: Shown only, not scored; null if not forecast.
         rain_in_hr:
           type: number
           format: double
@@ -267,6 +287,8 @@ components:
           format: double
         temp_f:
           type: integer
+          nullable: true
+          description: Shown only, not scored; null if not forecast.
       required:
       - gust_mph
       - rain_in_hr

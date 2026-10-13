@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/api/client";
+import { api, isTransient } from "@/lib/api/client";
 import type { Plan } from "@/lib/api/types";
 
 // Each plan object gets its own cache entry; a re-plan is a new object.
@@ -16,7 +16,8 @@ export function useCorridorForecast(plan: Plan | null) {
     queryKey: ["corridor", plan ? planKey(plan) : 0],
     enabled: plan !== null,
     staleTime: Infinity,
-    retry: 1,
+    // A 4xx (too large a corridor, a rate limit) fails the same way if sent again at once.
+    retry: (failureCount, error) => failureCount < 1 && isTransient(error),
     queryFn: ({ signal }) =>
       api.corridorForecast(
         {

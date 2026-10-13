@@ -5,6 +5,7 @@ from common.geo import (
     destination_point,
     haversine_m,
     point_at_distance,
+    sample_distances,
     simplify,
     slice_polyline,
 )
@@ -38,3 +39,9 @@ def test_should_drop_collinear_points_and_keep_corners_when_simplifying():
 def test_destination_point_round_trip():
     p = destination_point((40.0, -100.0), 90, 100_000)
     assert haversine_m((40.0, -100.0), p) == pytest.approx(100_000, rel=1e-6)
+
+
+def test_should_sample_every_step_and_always_the_end_exactly_once():
+    assert list(sample_distances(0.0, 250.0, 100.0)) == [0.0, 100.0, 200.0, 250.0]
+    assert list(sample_distances(0.0, 200.0, 100.0)) == [0.0, 100.0, 200.0]
+    assert list(sample_distances(50.0, 50.0, 100.0)) == [50.0]
